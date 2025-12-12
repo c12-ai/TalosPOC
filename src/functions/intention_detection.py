@@ -4,19 +4,18 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import HumanMessage
 
-from classes.system_state import IntentionDetectionFin
 from src.classes.operation import OperationResponse
 from src.classes.PROMPT import INTENTION_DETECTION_SYSTEM_PROMPT
 from src.classes.system_state import IDAIDetermine, IntentionDetectionFin
 from src.utils.logging_config import logger
-from src.utils.models import MAX_MODEL
+from src.utils.models import INTENTION_DETECTION_MODEL
 
 
 class IntentionDetectionAgent:
     def __init__(self) -> None:
         """Initialize the IntentionDetectionAgent."""
         self.intention_detection_agent = create_agent(
-            model=MAX_MODEL,
+            model=INTENTION_DETECTION_MODEL,
             response_format=IDAIDetermine,
             system_prompt=INTENTION_DETECTION_SYSTEM_PROMPT,
         )

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime
 
 from langchain.agents import create_agent
@@ -10,49 +8,43 @@ from src.classes.operation import OperationResponse
 from src.classes.PROMPT import WATCH_DOG_SYSTEM_PROMPT
 from src.classes.system_state import UserAdmittance, WatchDogAIDetermined
 from src.utils.logging_config import logger
-from src.utils.models import MAX_MODEL
+from src.utils.models import WATCHDOG_MODEL
+from src.utils.settings import ChatModelConfig, settings
 
 
 class WatchDogAgent:
     def __init__(self) -> None:
         """Initialize the WatchDogAgent."""
+        self.config: ChatModelConfig = settings.agents.watchdog
         self.watch_dog = create_agent(
-            model=MAX_MODEL,
+            model=WATCHDOG_MODEL,
             response_format=ToolStrategy[WatchDogAIDetermined](WatchDogAIDetermined),
             system_prompt=WATCH_DOG_SYSTEM_PROMPT,
         )
 
-        logger.debug("WatchDogAgent initialized with model={}", MAX_MODEL)
+        logger.info("WatchDogAgent initialized with model={}", self.config)
 
-    def run(
-        self,
-        user_input: list[AnyMessage],
-        stream_mode: bool = False,
-    ) -> OperationResponse[list[AnyMessage], UserAdmittance]:
+    def run(self, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], UserAdmittance]:
         """
         Run the intention detection agent to analyze user input.
 
-        Set stream_mode to True to stream the response from the agent.
-
         Args:
-            user_input (list[BaseMessage]): The user input message.
-            stream_mode (bool): Whether to stream the response from the agent.
+            user_input (list[AnyMessage]): The user input messages ordered chronologically.
 
         Returns:
-            OperationResponse[str, UserAdmittance]: The operation response containing the input user input and the output admittance.
+            OperationResponse[list[AnyMessage], UserAdmittance]: The operation response containing the raw input and the admittance decision.
 
         """
-        logger.info("WatchDogAgent.run triggered. stream_mode={}", stream_mode)
+        start_time = datetime.now()
+
+        logger.info("WatchDogAgent.run triggered with {} messages", len(user_input))
+
         ai_decision = self._watch_dog_release(input_msg=user_input)
 
-        logger.info(
-            "WatchDogAgent result: within_domain={}, within_capacity={}",
-            ai_decision.within_domain,
-            ai_decision.within_capacity,
-        )
+        end_time = datetime.now()
 
         return OperationResponse[list[AnyMessage], UserAdmittance](
-            operation_id="intention_detection_001",
+            operation_id="watchdog_admittance_001",
             input=user_input,
             output=UserAdmittance(
                 id="user_admittance_001",
@@ -61,11 +53,10 @@ class WatchDogAgent:
                 within_capacity=ai_decision.within_capacity,
                 feedback=ai_decision.feedback,
             ),
-            start_time=datetime.now().isoformat(timespec="microseconds"),
-            end_time=datetime.now().isoformat(timespec="microseconds"),
+            start_time=start_time.isoformat(timespec="microseconds"),
+            end_time=end_time.isoformat(timespec="microseconds"),
         )
 
-    # def _watch_dog_release(self, input_msg: str) -> WatchDogAIDetermined:
     def _watch_dog_release(self, input_msg: list[AnyMessage]) -> WatchDogAIDetermined:
         """
         Understanding user intention from input text and detemining if it's within domain and capacity.
@@ -77,10 +68,15 @@ class WatchDogAgent:
             WatchDogAIDetermined: _description_
 
         """
-        # TODO: Implement actual intention detection logic here.
-
+        result = {}
         try:
             result = self.watch_dog.invoke(input={"messages": input_msg})  # type: ignore
+            logger.info(
+                "WatchDogAgent result: within_domain={}, within_capacity={}, feedback={}",
+                result["structured_response"].within_domain,
+                result["structured_response"].within_capacity,
+                result["structured_response"].feedback,
+            )
         except StructuredOutputValidationError as se:
             logger.error(f"WatchDog structured output validation error. error={se}")
             raise
