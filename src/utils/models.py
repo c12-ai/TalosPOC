@@ -22,7 +22,7 @@ MAX_MODEL = ChatOpenAI(
     # base_url="https://api.openai.com/v1",
     top_p=0.95,
     seed=42,
-    callbacks=[PromptLogger()],
+    # callbacks=[PromptLogger()],
 )
 
 MEDIUM_MODEL = ChatOpenAI(

@@ -23,12 +23,13 @@ class WatchDogAIDetermined(BaseModel):
     within_capacity: bool = Field(..., description="表示用户输入是否在系统可执行范围内")
     feedback: str = Field(..., description="对用户输入的判别依据和进一步输入建议")
 
-    @field_validator("within_capacity")
+    @field_validator("within_capacity", "within_domain")
     @classmethod
     def check_boolean(cls, v: bool) -> bool:
         """Validate that the field is a boolean."""
-        # TODO: Add actual validation logic here.
-        return True
+        if not isinstance(v, bool):
+            raise TypeError("within_prefixed attr must be a boolean")
+        return v
 
 
 class UserAdmittance(WatchDogAIDetermined):
