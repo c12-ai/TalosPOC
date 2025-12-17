@@ -1,28 +1,36 @@
-from typing import TypedDict
-
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AnyMessage
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.classes.operation import OperationResponse
 from src.classes.system_enum import AdmittanceState
-from src.classes.system_state import HumanApproval, IntentionDetectionFin
-from src.functions.admittance import UserAdmittance
+from src.classes.system_state import HumanApproval, IntentionDetectionFin, PlanningAgentOutput, UserAdmittance
 
 
-class TLCState(TypedDict):
+class TLCState(BaseModel):
+    """
+    LangGraph state schema.
+
+    Fields have defaults to behave like TypedDict(total=False).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
+
     # Received Input
-    messages: list[HumanMessage | AIMessage | SystemMessage]
-    user_input: str
-    human_confirmation: OperationResponse[str, HumanApproval]
-
-    # Routing
-    survey: dict[str, bool]
+    messages: list[AnyMessage] = Field(default_factory=list)
+    user_input: list[AnyMessage] = Field(default_factory=list)
+    human_confirmation: OperationResponse[str, HumanApproval] | None = None
 
     # Internal Usage
-    route_survey: str
-    id_res: OperationResponse[str, UserAdmittance]
+    id_res: OperationResponse[list[AnyMessage], UserAdmittance] | None = None
 
     # Agent Output
-    admittance: OperationResponse[str, UserAdmittance]
-    admittance_state: AdmittanceState
-    intention: OperationResponse[str, IntentionDetectionFin]
-    classify_res: OperationResponse[UserAdmittance, str]
+    admittance: OperationResponse[list[AnyMessage], UserAdmittance] | None = None
+    admittance_state: AdmittanceState | None = None
+    intention: OperationResponse[list[AnyMessage], IntentionDetectionFin] | None = None
+    classify_res: OperationResponse[UserAdmittance, str] | None = None
+
+    # Planner Output
+    plan: OperationResponse[list[AnyMessage], PlanningAgentOutput] | None = None
+
+    # Planner Execution
+    plan_cursor: int = 0
