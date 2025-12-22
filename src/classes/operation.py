@@ -24,8 +24,12 @@ class OperationResume(BaseModel):
 
 class OperationResponse[T, K](BaseModel):
     operation_id: str = Field(..., description="Unique identifier for the operation.")
-    input: T = Field(..., description="The input parameters for the operation. Must be JSON serializable and stored in KV")
-    output: K = Field(..., description="The output results of the operation. Must be JSON serializable and stored in KV")
+    input: T = Field(
+        ..., description="The input parameters for the operation. Must be JSON serializable and stored in KV"
+    )
+    output: K = Field(
+        ..., description="The output results of the operation. Must be JSON serializable and stored in KV"
+    )
     start_time: str | None = Field(..., description="The start time of the operation.")
     end_time: str | None = Field(..., description="The end time of the operation.")
 

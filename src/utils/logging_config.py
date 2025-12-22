@@ -52,4 +52,3 @@ def setup_logger() -> None:
 setup_logger()
 
 __all__ = ["logger"]
-
