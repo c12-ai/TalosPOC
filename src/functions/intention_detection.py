@@ -2,7 +2,7 @@ from datetime import datetime
 
 from langchain.agents import create_agent
 from langchain.agents.structured_output import StructuredOutputValidationError
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AnyMessage
 
 from src.classes.operation import OperationResponse
 from src.classes.PROMPT import INTENTION_DETECTION_SYSTEM_PROMPT
@@ -20,23 +20,25 @@ class IntentionDetectionAgent:
             system_prompt=INTENTION_DETECTION_SYSTEM_PROMPT,
         )
 
-    def run(self, user_input: str) -> OperationResponse[str, IntentionDetectionFin]:
+    def run(self, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], IntentionDetectionFin]:
         """
-        Detect user intention from input text.
+        Detect user intention from input messages.
 
         Args:
-            user_admittance (UserAdmittance): The admittance information of the user.
+            user_input (list[AnyMessage]): The user input messages ordered chronologically.
 
         Returns:
-            OperationResponse[UserAdmittance, IntentionDetectionFin]: The operation response containing the input admittance and the detected intention.
+            OperationResponse[list[AnyMessage], IntentionDetectionFin]: The operation response containing the input messages and the detected intention.
 
         """
-        # Step 1. AI determine the intention of which gola
+        start_time = datetime.now()
+
+        logger.info("IntentionDetectionAgent.run triggered with {} messages", len(user_input))
+
+        # Step 1. AI determine the intention of which goal
         ai_output = None
         try:
-            ai_output = self.intention_detection_agent.invoke({"messages": [HumanMessage(content=user_input)]})[
-                "structured_response"
-            ]
+            ai_output = self.intention_detection_agent.invoke(input={"messages": user_input})["structured_response"]  # type: ignore
 
             if not isinstance(ai_output, IDAIDetermine):
                 raise TypeError(
@@ -48,21 +50,28 @@ class IntentionDetectionAgent:
             raise
 
         # Step 2. Construct the intention detection fin output
-
         output = IntentionDetectionFin(
-            goal_id=ai_output.goal_id,
-            matching_score=ai_output.matching_score,
+            matched_goal_type=ai_output.matched_goal_type,
             reason=ai_output.reason,
-            winner_id=ai_output.goal_id,
+            winner_id=ai_output.matched_goal_type.value,
             evidences=[ai_output],
         )
 
+        end_time = datetime.now()
+
         logger.info(f"IntentionDetectionAgent output={output}")
 
-        return OperationResponse[str, IntentionDetectionFin](
+        return OperationResponse[list[AnyMessage], IntentionDetectionFin](
             operation_id="intention_detection_001",
             input=user_input,
             output=output,
-            start_time=datetime.now().isoformat(),
-            end_time=datetime.now().isoformat(),
+            start_time=start_time.isoformat(timespec="microseconds"),
+            end_time=end_time.isoformat(timespec="microseconds"),
         )
+
+
+if __name__ == "__main__":
+    from langchain_core.messages import HumanMessage
+
+    agent = IntentionDetectionAgent()
+    agent.run(user_input=[HumanMessage(content="帮我做个 TLC 点板分析")])

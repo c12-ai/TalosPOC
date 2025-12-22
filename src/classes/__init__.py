@@ -1,4 +1,4 @@
-# """Convenience exports for the `classes` package."""
+"""Classes package."""
 
 # from src.classes.GoalList import CapabilityCargo, GoalTemplate
 # from src.classes.Operation import OperationResponse, OperationRunning

@@ -2,7 +2,6 @@ from typing import Any
 
 from pydantic import Field
 
-from classes.system_state import HumanApproval
 from src.classes.operation import OperationResponse
 from src.classes.system_state import HumanApproval, IntentionDetectionFin
 from src.utils.logging_config import logger

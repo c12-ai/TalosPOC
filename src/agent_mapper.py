@@ -13,7 +13,14 @@ from src.agents.tlc_agent import TLCAgent
 from src.classes.agent_flow_state import TLCState
 from src.classes.operation import OperationResponse, OperationResume, OperationRouting
 from src.classes.system_enum import AdmittanceState, ExecutionStatusEnum
-from src.classes.system_state import TODO, HumanApproval, IntentionDetectionFin, PlanningAgentOutput, UserAdmittance
+from src.classes.system_state import (
+    ExecutorKey,
+    HumanApproval,
+    IntentionDetectionFin,
+    PlanningAgentOutput,
+    PlanStep,
+    UserAdmittance,
+)
 from src.functions.admittance import WatchDogAgent
 from src.functions.human_interaction import HumanInLoop
 from src.functions.intention_detection import IntentionDetectionAgent
@@ -138,7 +145,7 @@ def intention_detection_node(state: TLCState) -> dict[str, OperationResponse[lis
 
 
 def planner_node(state: TLCState) -> dict[str, Any]:
-    """Generate a TODO plan based on the latest user messages (post-confirmation)."""
+    """Generate an executable plan (plan_steps) based on the latest user messages (post-confirmation)."""
     messages = _ensure_messages(state)
     logger.info("Running planner_node with {} messages", len(messages))
     res = planner_agent.run(user_input=messages)
@@ -154,61 +161,121 @@ def _get_plan_output(state: TLCState) -> PlanningAgentOutput:
     return plan.output
 
 
-def _get_current_todo(state: TLCState) -> tuple[int, TODO]:
+def _get_current_step(state: TLCState) -> tuple[int, PlanStep]:
     cursor = int(state.plan_cursor)
-    return cursor, _get_plan_output(state).todo_list[cursor]
+    return cursor, _get_plan_output(state).plan_steps[cursor]
 
 
-def dispatch_todo_node(_state: TLCState) -> dict[str, Any]:
-    """No-op node used as a stable point for conditional routing to per-todo executors."""
-    return {}
+def dispatch_todo_node(state: TLCState) -> dict[str, Any]:
+    """Prepare next todo for execution (idempotency + optional human approval)."""
+    plan_out = _get_plan_output(state)
+    cursor = int(state.plan_cursor)
+
+    while cursor < len(plan_out.plan_steps):
+        step = plan_out.plan_steps[cursor]
+        if step.status in {ExecutionStatusEnum.COMPLETED, ExecutionStatusEnum.CANCELLED, ExecutionStatusEnum.ON_HOLD}:
+            cursor += 1
+            continue
+        break
+
+    updates: dict[str, Any] = {}
+    if cursor != int(state.plan_cursor):
+        updates["plan_cursor"] = cursor
+
+    if cursor >= len(plan_out.plan_steps):
+        return updates
+
+    step = plan_out.plan_steps[cursor]
+    if step.requires_human_approval:
+        interrupt_payload = {
+            "question": "Approve executing this step? If not, reject; optionally edit input in 'comment'.",
+            "step": {
+                "id": step.id,
+                "title": step.title,
+                "executor": str(step.executor),
+                "args": step.args,
+                "requires_human_approval": step.requires_human_approval,
+                "status": step.status.value,
+            },
+        }
+        payload = interrupt(interrupt_payload)
+        resume = OperationResume(**payload)
+
+        if resume.approval:
+            step.requires_human_approval = False
+            edited_text = (resume.comment or "").strip()
+            if edited_text:
+                step.args["input_text"] = edited_text
+        else:
+            step.status = ExecutionStatusEnum.CANCELLED
+            step.output = {
+                "agent": "human_review",
+                "note": "Step execution rejected by human review.",
+                "executor": str(step.executor),
+                "args": step.args,
+                "comment": resume.comment,
+            }
+            updates["plan"] = state.plan
+            updates["plan_cursor"] = cursor + 1
+
+    if "plan" not in updates:
+        updates["plan"] = state.plan
+    return updates
 
 
 def route_next_todo(state: TLCState) -> str:
-    """Route to the next todo executor based on the current todo name; END when done."""
+    """Route to the next step executor based on step.executor; END when done."""
     plan_out = _get_plan_output(state)
     cursor = int(state.plan_cursor)
-    if cursor >= len(plan_out.todo_list):
-        logger.info("All todos executed. cursor={} total={}", cursor, len(plan_out.todo_list))
+    if cursor >= len(plan_out.plan_steps):
+        logger.info("All steps executed. cursor={} total={}", cursor, len(plan_out.plan_steps))
         return "done"
 
-    todo = plan_out.todo_list[cursor]
-    name = (todo.name or "").strip().lower()
-    logger.info("Routing todo cursor={} name={}", cursor, name)
+    step = plan_out.plan_steps[cursor]
+    logger.info("Routing step cursor={} id={} executor={}", cursor, step.id, step.executor)
 
-    if "tlc" in name:
+    if step.executor == ExecutorKey.TLC_AGENT:
         return "execute_tlc"
 
     return "execute_unsupported"
 
 
 def execute_tlc_node(state: TLCState) -> dict[str, Any]:
-    """Execute TLC-related todo using TLCAgent (compound extraction + placeholder MCP lookup)."""
-    cursor, todo = _get_current_todo(state)
+    """Execute TLC-related step using TLCAgent (compound extraction + placeholder MCP lookup)."""
+    cursor, step = _get_current_step(state)
 
-    todo.status = ExecutionStatusEnum.IN_PROGRESS
+    step.status = ExecutionStatusEnum.IN_PROGRESS
     messages = _ensure_messages(state)
+
+    # Optional: allow plan args to override the latest human text input.
+    # This is useful when planner produces a normalized instruction for the executor.
+    input_text = str(step.args.get("input_text", "")).strip()
+    if input_text:
+        messages = _apply_human_revision(messages, input_text)
     res = tlc_agent.run(user_input=messages)
 
-    todo.output = {
+    step.output = {
         "agent": "tlc_agent",
+        "executor": str(step.executor),
+        "args": step.args,
         "result": res.output.model_dump(mode="json"),
     }
-    todo.status = ExecutionStatusEnum.COMPLETED
+    step.status = ExecutionStatusEnum.COMPLETED
 
-    logger.info("Executed TLC todo cursor={} id={} name={}", cursor, todo.id, todo.name)
+    logger.info("Executed TLC step cursor={} id={} executor={}", cursor, step.id, step.executor)
     return {"plan": state.plan}
 
 
 def execute_unsupported_node(state: TLCState) -> dict[str, Any]:
-    """Mark todo as on-hold when no executor exists yet."""
-    cursor, todo = _get_current_todo(state)
-    todo.output = {
+    """Mark step as on-hold when no executor exists yet."""
+    _cursor, step = _get_current_step(state)
+    step.output = {
         "agent": "executor",
-        "note": f"No executor implemented for task name '{todo.name}'.",
+        "note": f"No executor implemented for executor '{step.executor}'.",
+        "executor": str(step.executor),
+        "args": step.args,
     }
-    todo.status = ExecutionStatusEnum.ON_HOLD
-    logger.warning("No executor for todo cursor={} id={} name={}", cursor, todo.id, todo.name)
+    step.status = ExecutionStatusEnum.ON_HOLD
     return {"plan": state.plan}
 
 

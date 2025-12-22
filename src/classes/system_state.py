@@ -1,16 +1,19 @@
+from enum import StrEnum
+from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import AnyMessage
 from pydantic import BaseModel, Field, field_validator
 
+from src.classes.system_enum import ExecutionStatusEnum, GoalTypeEnum
+
 
 class IDAIDetermine(BaseModel):
-    goal_id: str
-    matching_score: int
+    matched_goal_type: GoalTypeEnum
     reason: str
 
     def __str__(self) -> str:
-        return f"Goal id: {self.goal_id}'s matching score is {self.matching_score}, reason: {self.reason}"
+        return f"Matched goal type: {self.matched_goal_type}, reason: {self.reason}"
 
 
 class IntentionDetectionFin(IDAIDetermine):
@@ -44,3 +47,38 @@ class HumanApproval(BaseModel):
     approval: bool = Field(..., description="Whether the human reviewer approved proceeding.")
     reviewed: IntentionDetectionFin = Field(..., description="The operation response that was reviewed.")
     comment: str | None = Field(None, description="Revised user input provided when the decision is 'edit'.")
+
+
+class Compound(BaseModel):
+    compound_name: str = Field(..., description="Compound name, IUPAC standard name, English")
+    smiles: str = Field(..., description="SMILES expression of the compound")
+
+
+class TLCAIOutput(BaseModel):
+    compounds: list[Compound] = Field(..., description="List of compounds extracted from the text")
+
+
+class TLCAgentOutput(TLCAIOutput):
+    pass
+
+
+class ExecutorKey(StrEnum):
+    TLC_AGENT = "tlc_agent.run"
+    # COLUMN_AGENT = "column.recommend"
+    # ROBOT_TLC = "robot.tlc_spot"
+    # PROPERTY_LOOKUP = "property.lookup"
+
+
+class PlanStep(BaseModel):
+    id: str
+    title: str
+    executor: ExecutorKey
+    args: dict[str, Any] = Field(default_factory=dict)  # Different for each executor
+    requires_human_approval: bool = True
+    status: ExecutionStatusEnum = ExecutionStatusEnum.NOT_STARTED
+    output: Any | None = None
+
+
+class PlanningAgentOutput(BaseModel):
+    plan_steps: list[PlanStep] = Field(..., description="List of steps to be executed")
+    plan_hash: str = Field(..., description="Hash of the plan")

@@ -48,3 +48,6 @@ ignore = [
 
 [format]
 docstring-code-format = true
+
+[lint.per-file-ignores]
+"src/**/*.ipynb" = ["D103"]
