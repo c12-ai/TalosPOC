@@ -35,7 +35,7 @@ def streaming() -> None:
     while True:
         # interrupt_payload: Any | None = None
 
-        for state in talos_agent.stream(next_input, config=config, stream_mode="messages"):
+        for state in talos_agent.stream(next_input, config=config, stream_mode="values"):
             print(f"Updated States: {_pretty(state)}")
 
             # Catch Human In the Loop
