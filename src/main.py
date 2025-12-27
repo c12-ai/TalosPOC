@@ -4,7 +4,7 @@ from typing import Any
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from src import agent_mapper
+from src import node_mapper
 from src.classes.agent_flow_state import TLCState
 from src.classes.system_enum import AdmittanceState
 
@@ -15,28 +15,28 @@ def create_talos_workflow() -> StateGraph:
 
     # region <router function placeholder>
 
-    workflow.add_node("user_admittance", agent_mapper.user_admittance_node)
-    workflow.add_node("intention_detection", agent_mapper.intention_detection_node)
+    workflow.add_node("user_admittance", node_mapper.user_admittance_node)
+    workflow.add_node("intention_detection", node_mapper.intention_detection_node)
 
-    workflow.add_node("bottom_line_handler", agent_mapper.bottom_line_handler_node)
-    workflow.add_node("request_user_confirm", agent_mapper.request_user_confirm)
-    workflow.add_node("dispatcher", agent_mapper.dispatcher_node)
+    workflow.add_node("bottom_line_handler", node_mapper.bottom_line_handler_node)
+    workflow.add_node("request_user_confirm", node_mapper.request_user_confirm)
+    workflow.add_node("dispatcher", node_mapper.dispatcher_node)
 
-    workflow.add_node("planner", agent_mapper.planner_node)
-    workflow.add_node("plan_review", agent_mapper.plan_review_node)
+    workflow.add_node("planner", node_mapper.planner_node)
+    workflow.add_node("plan_review", node_mapper.plan_review_node)
 
-    workflow.add_node("dispatch_todo", agent_mapper.dispatch_todo_node)
-    workflow.add_node("prepare_tlc_step", agent_mapper.prepare_tlc_step_node)
-    workflow.add_node("execute_tlc", agent_mapper.tlc_agent.subgraph)
-    workflow.add_node("finalize_tlc_step", agent_mapper.finalize_tlc_step_node)
-    workflow.add_node("execute_unsupported", agent_mapper.execute_unsupported_node)
-    workflow.add_node("advance_todo_cursor", agent_mapper.route_advance_todo_cursor_node)
-    # workflow.add_node("checkpoint", agent_mapper.survey_inspect)
+    workflow.add_node("dispatch_todo", node_mapper.dispatch_todo_node)
+    workflow.add_node("prepare_tlc_step", node_mapper.prepare_tlc_step_node)
+    workflow.add_node("execute_tlc", node_mapper.tlc_agent.subgraph)
+    workflow.add_node("finalize_tlc_step", node_mapper.finalize_tlc_step_node)
+    workflow.add_node("execute_unsupported", node_mapper.execute_unsupported_node)
+    workflow.add_node("advance_todo_cursor", node_mapper.route_advance_todo_cursor_node)
+    # workflow.add_node("checkpoint", node_mapper.survey_inspect)
 
     workflow.add_edge(START, "user_admittance")
     workflow.add_conditional_edges(
         "user_admittance",
-        agent_mapper.route_admittance,
+        node_mapper.route_admittance,
         {
             AdmittanceState.YES.value: "intention_detection",
             AdmittanceState.NO.value: "bottom_line_handler",
@@ -44,7 +44,7 @@ def create_talos_workflow() -> StateGraph:
     )
     workflow.add_conditional_edges(
         "bottom_line_handler",
-        agent_mapper.route_bottom_line,
+        node_mapper.route_bottom_line,
         {
             "done": END,
         },
@@ -53,7 +53,7 @@ def create_talos_workflow() -> StateGraph:
     workflow.add_edge("intention_detection", "request_user_confirm")
     workflow.add_conditional_edges(
         "request_user_confirm",
-        agent_mapper.route_human_confirm_intention,
+        node_mapper.route_human_confirm_intention,
         {
             "proceed": "dispatcher",
             "revise": "intention_detection",
@@ -62,7 +62,7 @@ def create_talos_workflow() -> StateGraph:
 
     workflow.add_conditional_edges(
         "dispatcher",
-        agent_mapper.route_dispatcher,
+        node_mapper.route_dispatcher,
         {
             "planner": "planner",
             "executor": "dispatch_todo",
@@ -72,15 +72,15 @@ def create_talos_workflow() -> StateGraph:
         },
     )
 
-    workflow.add_node("consulting_handler", agent_mapper.consulting_handler_node)
-    workflow.add_node("query_handler", agent_mapper.query_handler_node)
+    workflow.add_node("consulting_handler", node_mapper.consulting_handler_node)
+    workflow.add_node("query_handler", node_mapper.query_handler_node)
     workflow.add_edge("consulting_handler", END)
     workflow.add_edge("query_handler", END)
 
     workflow.add_edge("planner", "plan_review")
     workflow.add_conditional_edges(
         "plan_review",
-        agent_mapper.route_plan_review,
+        node_mapper.route_plan_review,
         {
             "approved": "dispatch_todo",
             "revise": "planner",
@@ -89,7 +89,7 @@ def create_talos_workflow() -> StateGraph:
 
     workflow.add_conditional_edges(
         "dispatch_todo",
-        agent_mapper.route_next_todo,
+        node_mapper.route_next_todo,
         {
             "prepare_tlc_step": "prepare_tlc_step",
             "execute_unsupported": "execute_unsupported",
