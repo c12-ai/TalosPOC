@@ -1,17 +1,64 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import httpx
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.messages import AnyMessage, HumanMessage
+from langchain_core.runnables.config import RunnableConfig
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
+from langgraph.types import Command, Interrupt, interrupt
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.classes.operation import OperationInterruptPayload, OperationResponse
-from src.classes.system_state import TLCAgentOutput
+from src.classes.operation import OperationInterruptPayload, OperationResponse, OperationResume
+from src.classes.PROMPT import TLC_AGENT_PROMPT
+from src.classes.system_state import Compound, TLCAgentOutput, TLCAIOutput, TLCCompoundSpecItem, TLCRatioPayload, TLCRatioResult
 from src.utils.logging_config import logger
+from src.utils.models import TLC_MODEL
 from src.utils.tools import coerce_operation_resume
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+def get_recommended_ratio(compounds: list[Compound] | None = None) -> list[TLCRatioResult]:
+    """Get the recommended ratio of the TLC experiment for each compound."""
+    host = "52.83.119.132"
+    url = f"http://{host}:8000/api/tlc-request"
+
+    if not compounds:
+        raise ValueError("Missing compounds")
+
+    results: list[TLCRatioResult] = []
+    for idx, compound in enumerate(compounds):
+        compound_name = (compound.compound_name or "").strip()
+        smiles = (compound.smiles or "").strip() if compound.smiles else ""
+        if not compound_name and not smiles:
+            raise ValueError(f"Missing `compound_name` and `smiles` in `compounds[{idx}]`")
+
+        payload: dict[str, str] = {"model_backend": "GAT"}
+        if compound_name:
+            payload["compound_name"] = compound_name
+        if smiles:
+            payload["smiles"] = smiles
+
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()["result"]
+                parsed = TLCRatioPayload.model_validate(data)
+        except Exception:
+            logger.exception("Failed to get TLC recommended ratio from MCP server")
+            raise
+        else:
+            results.append(parsed.tlc_parameters)
+
+    return results
 
 
 class TLCAgentGraphState(BaseModel):
@@ -38,11 +85,21 @@ class TLCAgent:
       - confirm -> done (return `tlc_spec` to parent graph)
     """
 
-    def __init__(self) -> None:
-        """Build and compile the internal LangGraph subgraph."""
+    def __init__(self, *, with_checkpointer: bool = False) -> None:
+        """
+        Build and compile the internal LangGraph subgraph.
+
+        Args:
+            with_checkpointer: If True, compiles with MemorySaver for standalone usage with HITL.
+                              If False (default), parent graph's checkpointer will be used.
+
+        """
+        logger.info("TLCAgent initialized with model={}", TLC_MODEL)
+
         subgraph = StateGraph(TLCAgentGraphState)
         subgraph.add_node("extract_compound_and_fill_spec", self._extract_compound_and_fill_spec)
         subgraph.add_node("user_confirm", self._user_confirm)
+        subgraph.add_node("fill_recommended_ratio", self._fill_recommended_ratio)
 
         subgraph.add_edge(START, "extract_compound_and_fill_spec")
         subgraph.add_edge("extract_compound_and_fill_spec", "user_confirm")
@@ -51,37 +108,130 @@ class TLCAgent:
             self._route_user_confirm,
             {
                 "revise": "extract_compound_and_fill_spec",
-                "confirm": END,
+                "confirm": "fill_recommended_ratio",
             },
         )
-        # TODO: Missing get recommended ratio
+        subgraph.add_edge("fill_recommended_ratio", END)
 
-        self._compiled_subgraph = subgraph.compile()
-        # Public handle for embedding into the parent graph (main flow should enter subgraph and only return on confirm).
-        self.subgraph = self._compiled_subgraph
+        checkpointer = MemorySaver() if with_checkpointer else None
+
+        # Attributes
+        self._compiled_subgraph = subgraph.compile(checkpointer=checkpointer)
+        self._agent = create_agent(
+            model=TLC_MODEL,
+            system_prompt=TLC_AGENT_PROMPT,
+            response_format=ProviderStrategy(TLCAIOutput),
+        )
 
     def run(
         self,
         *,
         user_input: list[AnyMessage],
         current_form: TLCAgentOutput | None = None,
+        approval_handler: Callable[[dict[str, Any]], OperationResume] | None = None,
+        thread_id: str = str(uuid.uuid4()),
     ) -> OperationResponse[list[AnyMessage], TLCAgentOutput]:
         """
-        Unified entrypoint for TLC flow.
+        Unified entrypoint for TLC flow with HITL handling.
+
+        This method provides complete control of the graph execution, handling the HITL loop
+        internally until a user-confirmed result is obtained.
+
+        Args:
+            user_input: Initial user messages
+            current_form: Existing TLC spec to continue from (optional)
+            approval_handler: Callback to get user approval during HITL interrupts.
+                             Receives interrupt payload, returns OperationResume.
+                             If None, runs as subgraph (interrupts bubble up to parent).
+            thread_id: Optional, if None, a random UUID will be generated.
+
+        Returns:
+            OperationResponse with confirmed TLC spec
+
+        HITL Loop Mechanism:
+        - When approval_handler is provided, this method manages the complete HITL loop
+        - Detects interrupts in state, calls approval_handler, resumes with approval data
+        - Continues until tlc_spec.confirmed == True
+        - Returns only when complete
+
+        Usage:
+        1. Standalone with approval handler:
+           ```python
+           def get_approval(interrupt_data: dict) -> OperationResume:
+               # Get user input (from terminal, UI, etc.)
+               return OperationResume(approval=True, comment="", data={})
+
+
+           result = agent.run(user_input=[...], approval_handler=get_approval)
+           ```
+
+        2. As subgraph (approval_handler=None):
+           - Interrupts bubble up to parent graph
+           - Parent handles approval and resumes
 
         NOTE: Structure-only POC. `extract_compound_and_fill_spec` is intentionally a mock.
+
         """
+        if approval_handler is None:
+            raise ValueError("approval_handler is required")
+
         start_time = datetime.now()
 
-        final_state = self._compiled_subgraph.invoke(
-            TLCAgentGraphState(messages=list(user_input), tlc_spec=current_form),
+        next_input: TLCAgentGraphState | Command = TLCAgentGraphState(
+            messages=list(user_input),
+            tlc_spec=current_form,
         )
+
+        config: RunnableConfig = RunnableConfig(configurable={"thread_id": thread_id, "stream_mode": "values"})
+
+        while True:
+            last_state = None
+
+            print("Looping...")
+
+            for state in self._compiled_subgraph.stream(next_input, config=config, stream_mode="values"):
+                last_state = state
+
+                if "__interrupt__" in state:
+                    interrupts: list[Interrupt] = state["__interrupt__"]
+                    if not interrupts:
+                        continue
+
+                    interrupt_data = interrupts[0].value
+
+                    # Get user approval via callback
+                    resume_payload = approval_handler(interrupt_data)
+
+                    # Resume graph with approval data
+                    next_input = Command[tuple[()]](resume=resume_payload.model_dump())
+
+                    break  # Break to restart stream with resume
+
+            # Check if we're done (no interrupt in last state)
+            if last_state and "__interrupt__" not in last_state:
+                # Extract final result
+                tlc_spec = last_state.get("tlc_spec") if isinstance(last_state, dict) else getattr(last_state, "tlc_spec", None)
+
+                # TODO: Handle case where tlc_spec is not a TLCAgentOutput, or at least verify its RDkit approved object.
+                if tlc_spec and tlc_spec.confirmed:
+                    return self._build_response(last_state, list(user_input), start_time)
+
+                # Shouldn't reach here if graph is properly configured
+                raise RuntimeError("Graph completed without confirmation")
+
+    @staticmethod
+    def _build_response(
+        final_state: dict | TLCAgentGraphState,
+        original_input: list[AnyMessage],
+        start_time: datetime,
+    ) -> OperationResponse[list[AnyMessage], TLCAgentOutput]:
+        """Extract data from final state and build OperationResponse."""
         if isinstance(final_state, dict):
             output_form = final_state.get("tlc_spec")
-            messages = final_state.get("messages", list(user_input))
+            messages = final_state.get("messages", original_input)
         else:
             output_form = getattr(final_state, "tlc_spec", None)
-            messages = getattr(final_state, "messages", list(user_input))
+            messages = getattr(final_state, "messages", original_input)
 
         if not isinstance(output_form, TLCAgentOutput):
             raise TypeError(f"TLCAgent did not produce TLCAgentOutput. Got: {type(output_form)}")
@@ -95,21 +245,50 @@ class TLCAgent:
             end_time=end_time.isoformat(timespec="microseconds"),
         )
 
+    def _extract_compound_and_fill_spec(self, state: TLCAgentGraphState) -> dict[str, Any]:
+        """
+        Extracting Compound information from user message by call _agent.
+
+        Update everything in the state.tlc_spec with the result from the agent.
+        """
+        result = self._agent.invoke({"messages": state.messages})  # pyright: ignore[reportArgumentType]
+
+        # Take TLCAIOutput from Model response and parse into updated TLC SPEC
+        model_resp: TLCAIOutput = result["structured_response"]
+
+        updated_spec: TLCAgentOutput = TLCAgentOutput(
+            compounds=model_resp.compounds,
+            resp_msg=model_resp.resp_msg,
+            spec=[],
+            confirmed=False,
+        )
+
+        return {"tlc_spec": updated_spec}
+
     @staticmethod
-    def _extract_compound_and_fill_spec(state: TLCAgentGraphState) -> dict[str, Any]:
-        """
-        Mock extractor for POC.
+    def _fill_recommended_ratio(state: TLCAgentGraphState) -> dict[str, Any]:
+        if not isinstance(state.tlc_spec, TLCAgentOutput) or not state.tlc_spec.compounds:
+            raise TypeError("Missing `tlc_spec`/`compounds` before fill_recommended_ratio")
 
-        - If there is an existing `tlc_spec`, keep it as-is.
-        - Otherwise create an empty skeleton `TLCAgentOutput`.
-        """
-        current = state.tlc_spec
-        if isinstance(current, TLCAgentOutput):
-            logger.debug("TLCAgent: keep existing tlc_spec (structure-only).")
-            return {"tlc_spec": current}
+        compounds = [c for c in state.tlc_spec.compounds if c is not None]
+        if any((not (c.compound_name or "").strip()) and (not (c.smiles or "").strip()) for c in compounds):
+            raise ValueError("Each compound must include at least one of `compound_name` or `smiles` before requesting ratio")
+        ratios = get_recommended_ratio(compounds=compounds)
+        spec = [
+            TLCCompoundSpecItem(
+                compound_name=c.compound_name,
+                smiles=c.smiles,
+                solvent_system=r.solvent_system,
+                ratio=r.ratio,
+                rf_value=r.rf_value,
+                description=r.description,
+                origin=r.origin,
+                backend=r.backend,
+            )
+            for c, r in zip(compounds, ratios, strict=True)
+        ]
 
-        logger.debug("TLCAgent: create empty tlc_spec skeleton (structure-only).")
-        return {"tlc_spec": TLCAgentOutput(compounds=[], spec=[], confirmed=False)}
+        return {"tlc_spec": state.tlc_spec.model_copy(update={"spec": spec, "confirmed": True})}
 
     @staticmethod
     def _user_confirm(state: TLCAgentGraphState) -> dict[str, Any]:
@@ -153,3 +332,34 @@ class TLCAgent:
             return TLCAgentOutput.model_validate(spec_dict)
         except Exception:
             return None
+
+
+if __name__ == "__main__":
+    """Interactive terminal test for TLC Agent following LangGraph best practices."""
+    import json
+
+    def terminal_approval_handler(interrupt_data: dict[str, Any]) -> OperationResume:
+        """Get approval from terminal user."""
+        print(f"\n[Interrupt] {interrupt_data.get('message', 'Confirm?')}")
+
+        if args := interrupt_data.get("args"):
+            print(f"Current spec: {json.dumps(args.get('tlc_spec'), indent=2, ensure_ascii=False)}")
+
+        approval = input("\nApprove? (yes/no): ").strip().lower()
+        comment = ""
+        if approval != "yes":
+            comment = input("Revision comment: ").strip()
+
+        return OperationResume(approval=(approval == "yes"), comment=comment, data={})
+
+    # Initialize agent with checkpointer for HITL
+    agent = TLCAgent(with_checkpointer=True)
+
+    user_input = input("[user]: ").strip()
+
+    result = agent.run(
+        user_input=[HumanMessage(content=user_input)],
+        approval_handler=terminal_approval_handler,
+    )
+
+    print(f"\n✓ TLC Spec Confirmed: {result.output.model_dump_json(indent=2)}\n")

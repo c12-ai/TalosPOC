@@ -29,7 +29,6 @@ class AgentModelSettings(BaseModel):
 
     watchdog: ChatModelConfig = Field(
         default_factory=lambda: ChatModelConfig(
-            model="gpt-5.1",
             temperature=0,
             top_p=0.95,
             seed=42,
@@ -37,7 +36,6 @@ class AgentModelSettings(BaseModel):
     )
     intention_detection: ChatModelConfig = Field(
         default_factory=lambda: ChatModelConfig(
-            model="gpt-5.1",
             temperature=0,
             top_p=0.95,
             seed=42,
@@ -46,16 +44,15 @@ class AgentModelSettings(BaseModel):
 
     tlc_agent: ChatModelConfig = Field(
         default_factory=lambda: ChatModelConfig(
-            model="gpt-5.1",
+            model="gpt-5-mini",
             temperature=0,
-            top_p=0.95,
+            # top_p=0.95,
             seed=42,
         ),
     )
 
     planner: ChatModelConfig = Field(
         default_factory=lambda: ChatModelConfig(
-            model="gpt-5.1",
             temperature=0,
             top_p=0.95,
             seed=42,

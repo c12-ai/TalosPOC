@@ -158,3 +158,5 @@ cython_debug/
 CLAUDE.md
 
 .trae/
+
+.uv-cache/

@@ -105,20 +105,29 @@ class Compound(BaseModel):
 class TLCRatioResult(BaseModel):
     """MCP server output payload (inner object)."""
 
-    property1: str
-    property2: str
+    solvent_system: str
+    ratio: str
+    rf_value: float | None = None
+    description: str | None = None
+    origin: str | None = None
+    backend: str | None = None
 
 
 class TLCRatioPayload(BaseModel):
     """MCP server output payload (outer envelope)."""
 
-    result: TLCRatioResult
+    request_id: str
+    compound_name: str
+    smiles: str | None = None
+    tlc_parameters: TLCRatioResult
+    timestamp: str
 
 
 class TLCAIOutput(BaseModel):
     """Class for TLC Compound Extraction AI Output, which job is to extract compound information from user input text."""
 
-    compounds: list[Compound] = Field(..., description="List of compounds extracted from the text")
+    compounds: list[Compound | None] = Field(default_factory=list, description="List of compounds extracted from the text")
+    resp_msg: str = Field(..., description="Message to user reply / guide next move")
 
 
 class TLCCompoundSpecItem(Compound, TLCRatioResult):
@@ -128,7 +137,7 @@ class TLCCompoundSpecItem(Compound, TLCRatioResult):
     Contains two classes of fields:
 
     - From `Compound`: compound_name, smiles
-    - From `TLCRatioResult`: property1, property2, which should be filled by MCP server
+    - From `TLCRatioResult`: tlc_parameters fields (solvent_system, ratio, rf_value, etc.), which should be filled by MCP server
     """
 
 

@@ -166,7 +166,18 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
 
     tlc_spec = TLCAgentOutput(
         compounds=[Compound(compound_name="Aspirin", smiles=None)],
-        spec=[TLCCompoundSpecItem(compound_name="Aspirin", smiles=None, property1="p1", property2="p2")],
+        spec=[
+            TLCCompoundSpecItem(
+                compound_name="Aspirin",
+                smiles=None,
+                solvent_system="DCM/MeOH",
+                ratio="19:1",
+                rf_value=None,
+                description="test",
+                origin="test",
+                backend="test",
+            ),
+        ],
         confirmed=True,
     )
 
@@ -253,7 +264,18 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
 
     tlc_spec = TLCAgentOutput(
         compounds=[Compound(compound_name="Aspirin", smiles=None)],
-        spec=[TLCCompoundSpecItem(compound_name="Aspirin", smiles=None, property1="p1", property2="p2")],
+        spec=[
+            TLCCompoundSpecItem(
+                compound_name="Aspirin",
+                smiles=None,
+                solvent_system="DCM/MeOH",
+                ratio="19:1",
+                rf_value=None,
+                description="test",
+                origin="test",
+                backend="test",
+            ),
+        ],
         confirmed=True,
     )
 

@@ -17,14 +17,12 @@ from src.classes.system_state import (
 from src.functions.admittance import WatchDogAgent
 from src.functions.human_interaction import HumanInLoop
 from src.functions.intention_detection import IntentionDetectionAgent
-from src.functions.planner import Planner
 from src.utils.logging_config import logger
 from src.utils.messages import apply_human_revision, ensure_messages
 
 watch_dog = WatchDogAgent()
 human_interact_agent = HumanInLoop()
 intention_detect_agent = IntentionDetectionAgent()
-planner_agent = Planner()
 tlc_agent = TLCAgent()
 
 
@@ -94,9 +92,7 @@ def user_admittance_node(
 
     return {
         "admittance": res,
-        "admittance_state": AdmittanceState.YES
-        if res.output.within_domain and res.output.within_capacity
-        else AdmittanceState.NO,
+        "admittance_state": AdmittanceState.YES if res.output.within_domain and res.output.within_capacity else AdmittanceState.NO,
         "messages": updated_messages,
         "user_input": updated_messages,
     }
@@ -152,95 +148,6 @@ def intention_detection_node(state: TLCState) -> dict[str, Any]:
         "messages": updated_messages,
         "user_input": updated_messages,
     }
-
-
-def planner_node(state: TLCState) -> dict[str, Any]:
-    """Generate an executable plan (plan_steps) based on the latest user messages (post-confirmation)."""
-    messages = _ensure_messages(state)
-    logger.info("Running planner_node with {} messages", len(messages))
-    res = planner_agent.run(user_input=messages)
-    logger.debug("Planner output: {}", res)
-
-    plan_out = res.output
-    steps_preview = "\n".join(
-        [
-            f"- {idx + 1}. {s.title} (executor={s.executor}, requires_human_approval={s.requires_human_approval})"
-            for idx, s in enumerate(plan_out.plan_steps)
-        ],
-    )
-    updated_messages = list(messages)
-    updated_messages.append(
-        AIMessage(
-            content="\n".join(
-                [
-                    "[planner] plan_created",
-                    f"plan_hash={plan_out.plan_hash}",
-                    "steps:",
-                    steps_preview or "- (no steps)",
-                ],
-            ),
-        ),
-    )
-
-    return {"plan": res, "plan_cursor": 0, "messages": updated_messages, "user_input": updated_messages}
-
-
-def plan_review_node(state: TLCState) -> dict[str, Any]:
-    """
-    Human-in-the-loop plan review.
-
-    - approve: proceed to executor
-    - reject (optionally with comment): revise user input and re-enter planner
-    """
-    plan_out = _get_plan_output(state)
-    messages = _ensure_messages(state)
-    return human_interact_agent.review_plan(plan_out=plan_out, messages=messages)
-
-
-def dispatch_todo_node(state: TLCState) -> dict[str, Any]:
-    """Prepare next todo for execution (idempotency + optional human approval)."""
-    plan_out = _get_plan_output(state)
-    cursor = int(state.plan_cursor)
-
-    while cursor < len(plan_out.plan_steps):
-        step = plan_out.plan_steps[cursor]
-        if step.status in {ExecutionStatusEnum.COMPLETED, ExecutionStatusEnum.CANCELLED, ExecutionStatusEnum.ON_HOLD}:
-            cursor += 1
-            continue
-        break
-
-    updates: dict[str, Any] = {}  # contains only what's changed
-    if cursor != int(state.plan_cursor):
-        updates["plan_cursor"] = cursor
-
-    if cursor >= len(plan_out.plan_steps):
-        return updates
-
-    step = plan_out.plan_steps[cursor]
-    if step.requires_human_approval:
-        resume = human_interact_agent.approve_step(step=step)
-
-        if resume.approval:
-            step.requires_human_approval = False
-            edited_text = (resume.comment or "").strip()
-            if edited_text:
-                step.args["input_text"] = edited_text
-        else:
-            step.status = ExecutionStatusEnum.CANCELLED
-            step.output = {
-                "agent": "human_review",
-                "note": "Step execution rejected by human review.",
-                "executor": str(step.executor),
-                "args": step.args,
-                "comment": resume.comment,
-            }
-            updates["plan"] = state.plan
-            updates["plan_cursor"] = cursor + 1
-
-    # copy exist
-    if "plan" not in updates:
-        updates["plan"] = state.plan
-    return updates
 
 
 def prepare_tlc_step_node(state: TLCState) -> dict[str, Any]:
@@ -351,13 +258,13 @@ def route_advance_todo_cursor_node(state: TLCState) -> dict[str, Any]:
     return {"plan_cursor": cursor + 1}
 
 
-def route_dispatcher(state: TLCState) -> str:
+def dispatcher_node(state: TLCState) -> str:
     """
     Pure function router.
 
     - Query: route to query handler
     - Consulting: route to consulting handler
-    - Operational: if no PLAN -> planner, else -> executor
+    - Operational: if no approved PLAN -> planner, else -> executor
     """
     intention = state.intention
     if intention is None:
@@ -369,22 +276,71 @@ def route_dispatcher(state: TLCState) -> str:
     if goal_type.value == "consulting":
         return "consulting"
 
-    if state.plan is None:
+    if state.plan is None or not state.plan_approved:
         return "planner"
     return "executor"
 
 
-def route_plan_review(state: TLCState) -> str:
-    """Route after plan_review HITL."""
-    if state.plan_approved:
-        return "approved"
-    return "revise"
+def dispatcher_execute(state: TLCState) -> str:
+    """
+    When match with execution intention, dispatch nodes.
 
+    if no plan, to "planner"
 
-def dispatcher_node(state: TLCState) -> dict[str, Any]:
-    """No-op node. Dispatcher logic is in `route_dispatcher`."""
+    After having Plan, to "dispatch_todo"
+
+    """
     _ = state
-    return {}
+
+    # TODO: Implement actual dispatcher execute logic
+
+    return "planner"
+
+
+def dispatch_todo_node(state: TLCState) -> dict[str, Any]:
+    """Prepare next todo for execution (idempotency + optional human approval)."""
+    plan_out = _get_plan_output(state)
+    cursor = int(state.plan_cursor)
+
+    while cursor < len(plan_out.plan_steps):
+        step = plan_out.plan_steps[cursor]
+        if step.status in {ExecutionStatusEnum.COMPLETED, ExecutionStatusEnum.CANCELLED, ExecutionStatusEnum.ON_HOLD}:
+            cursor += 1
+            continue
+        break
+
+    updates: dict[str, Any] = {}  # contains only what's changed
+    if cursor != int(state.plan_cursor):
+        updates["plan_cursor"] = cursor
+
+    if cursor >= len(plan_out.plan_steps):
+        return updates
+
+    step = plan_out.plan_steps[cursor]
+    if step.requires_human_approval:
+        resume = human_interact_agent.approve_step(step=step)
+
+        if resume.approval:
+            step.requires_human_approval = False
+            edited_text = (resume.comment or "").strip()
+            if edited_text:
+                step.args["input_text"] = edited_text
+        else:
+            step.status = ExecutionStatusEnum.CANCELLED
+            step.output = {
+                "agent": "human_review",
+                "note": "Step execution rejected by human review.",
+                "executor": str(step.executor),
+                "args": step.args,
+                "comment": resume.comment,
+            }
+            updates["plan"] = state.plan
+            updates["plan_cursor"] = cursor + 1
+
+    # copy exist
+    if "plan" not in updates:
+        updates["plan"] = state.plan
+    return updates
 
 
 def consulting_handler_node(state: TLCState) -> dict[str, Any]:

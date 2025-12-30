@@ -36,7 +36,7 @@ When compounds are confirmed, it will call TLC MCP server to recommend ratio of 
 
 `functions` folder contains Nodes / Agent that acts as coordinator which controls the flow going. `agents/` contains exectuor agent that coorrespondent to actual Chem technics. `run()` functions under each Agent is the Entry point. 
 
-`agent_mapper.py` is a mapper class which wrap Agents as Langgraph functionable runnable node. Only things related to Langgraph or minimum logic should be written under there. 这里应该是只管plan step / state的胶水层，业务逻辑/交互都应该在自己 Agent 中
+`node_mapper.py` is a mapper class which wrap Agents as Langgraph functionable runnable node. Only things related to Langgraph or minimum logic should be written under there. 这里应该是只管plan step / state的胶水层，业务逻辑/交互都应该在自己 Agent 中
 
 
 

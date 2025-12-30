@@ -1,24 +1,18 @@
+"""Run as a package, using `python -m src.tests.main`."""
+
 from __future__ import annotations
 
 import json
-import sys
 import uuid
-from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.types import Command, Interrupt
 
 from src.classes.agent_flow_state import TLCState
 from src.classes.operation import OperationResume
 from src.main import create_talos_agent
 from src.utils.tools import _pretty
-
-
-def _ensure_project_root_on_syspath() -> None:
-    """Allow running this module directly without relying on pytest's conftest.py."""
-    project_root = Path(__file__).resolve().parents[2]
-    sys.path.insert(0, str(project_root))
 
 
 def _prompt(prompt: str) -> str:
@@ -49,22 +43,15 @@ def _parse_resume() -> OperationResume:
     return OperationResume(approval=approval, comment=comment, data=data)
 
 
-def _render_last_ai(messages: list[AnyMessage]) -> None:
+def _render_last_assistant(messages: list[AnyMessage]) -> None:
     for msg in reversed(messages):
-        if isinstance(msg, AIMessage):
-            print("\n[assistant]\n" + str(msg.content).strip() + "\n")
+        if getattr(msg, "type", None) == "ai":
+            msg.pretty_print()
             return
 
 
 def main() -> None:
     """Interactive terminal runner that simulates a simple user portal for Talos agent."""
-    _ensure_project_root_on_syspath()
-
-    print("Talos CLI Portal (terminal)")
-    print("- Type your message and press enter")
-    print("- Type '/exit' to quit")
-    print("- During HITL, you will be asked to approve/revise\n")
-
     thread_id = f"portal-{uuid.uuid4()}"
     config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
     agent = create_talos_agent()
@@ -75,6 +62,8 @@ def main() -> None:
         user_text = _prompt("[user] > ")
         if not user_text:
             continue
+
+        # Explicit Exit condition
         if user_text.strip().lower() in {"/exit", "exit", "quit"}:
             break
 
@@ -102,7 +91,7 @@ def main() -> None:
 
         if last_state is not None and "messages" in last_state:
             conversation = list(last_state["messages"])
-            _render_last_ai(conversation)
+            _render_last_assistant(conversation)
         else:
             print("[warn] No final state/messages returned from graph.")
 

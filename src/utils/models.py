@@ -90,3 +90,7 @@ __all__ = [
     # "PromptLogger",
     "get_agent_model",
 ]
+
+
+if __name__ == "__main__":
+    TLC_MODEL.invoke(input="What is the capital of France?").pretty_print()
