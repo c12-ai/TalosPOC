@@ -116,7 +116,7 @@ class TLCAgent:
         checkpointer = MemorySaver() if with_checkpointer else None
 
         # Attributes
-        self._compiled_subgraph = subgraph.compile(checkpointer=checkpointer)
+        self.compiled = subgraph.compile(checkpointer=checkpointer)
         self._agent = create_agent(
             model=TLC_MODEL,
             system_prompt=TLC_AGENT_PROMPT,
@@ -189,7 +189,7 @@ class TLCAgent:
 
             print("Looping...")
 
-            for state in self._compiled_subgraph.stream(next_input, config=config, stream_mode="values"):
+            for state in self.compiled.stream(next_input, config=config, stream_mode="values"):
                 last_state = state
 
                 if "__interrupt__" in state:
@@ -333,6 +333,8 @@ class TLCAgent:
         except Exception:
             return None
 
+
+tlc_agent_subgraph = TLCAgent()
 
 if __name__ == "__main__":
     """Interactive terminal test for TLC Agent following LangGraph best practices."""

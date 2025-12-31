@@ -7,14 +7,16 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Interrupt
+from langgraph.types import interrupt as lg_interrupt
 
+import src.main as main_mod
 from src import node_mapper
+from src.agents.tlc_agent import TLCAgentGraphState
 from src.classes.agent_flow_state import TLCState
 from src.classes.operation import OperationResponse, OperationResume
 from src.classes.system_enum import ExecutionStatusEnum, GoalTypeEnum, TLCPhase
 from src.classes.system_state import (
     Compound,
-    HumanApproval,
     IntentionDetectionFin,
     PlanningAgentOutput,
     PlanStep,
@@ -22,6 +24,8 @@ from src.classes.system_state import (
     TLCCompoundSpecItem,
     UserAdmittance,
 )
+from src.functions.human_interaction import HumanInLoop
+from src.functions.planner import Planner
 from src.main import create_talos_agent
 
 
@@ -35,35 +39,74 @@ def _op_response(*, operation_id: str, input_value: Any, output_value: Any) -> O
     )
 
 
-def _stub_tlc_subgraph(*, tlc_spec: TLCAgentOutput) -> Any:
-    """Build a tiny subgraph that just writes `tlc_spec` (LangGraph v1 subgraph-as-node pattern)."""
+def _stub_planner_run(_self: Planner, *, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], PlanningAgentOutput]:
+    step = PlanStep(
+        id="s1",
+        title="TLC step",
+        executor=node_mapper.ExecutorKey.TLC_AGENT,
+        args={},
+        requires_human_approval=False,  # avoid extra HITL in specialist_dispatcher
+        status=ExecutionStatusEnum.NOT_STARTED,
+        output=None,
+    )
+    out = PlanningAgentOutput(plan_steps=[step], plan_hash="hash_test")
+    return _op_response(operation_id="planner_test", input_value=user_input, output_value=out)
 
-    def _finish(state: TLCState) -> dict[str, Any]:
-        return {"tlc_spec": tlc_spec, "messages": list(state.messages), "tlc_phase": TLCPhase.DONE}
 
-    g = StateGraph(TLCState)
+def _auto_approve_plan_review(_self: HumanInLoop, *, plan_out: PlanningAgentOutput, messages: list[AnyMessage]) -> dict[str, Any]:
+    """Skip interrupt(): auto-approve the plan."""
+    _ = plan_out, messages
+    return {"plan_approved": True}
+
+
+def _stub_tlc_compiled_no_hitl(*, tlc_spec: TLCAgentOutput) -> Any:
+    """A tiny TLC subgraph-as-node runnable that just writes `tlc_spec` (no interrupts)."""
+
+    def _finish(state: TLCAgentGraphState) -> dict[str, Any]:
+        return {"tlc_spec": tlc_spec, "messages": list(state.messages)}
+
+    g = StateGraph(TLCAgentGraphState)
     g.add_node("finish", _finish)
     g.add_edge(START, "finish")
     g.add_edge("finish", END)
     return g.compile()
 
 
-def _auto_confirm_intention(state: TLCState) -> dict[str, Any]:
-    """Test stub: skip interrupt() and auto-approve intention confirmation."""
-    if state.intention is None:
-        raise ValueError("Missing 'intention' in state")
-    reviewed = state.intention.output
-    confirmation = _op_response(
-        operation_id="human_confirmation_test",
-        input_value="auto",
-        output_value=HumanApproval(approval=True, reviewed=reviewed, comment=None),
-    )
-    return {"human_confirmation": confirmation}
+def _stub_tlc_compiled_with_hitl(*, tlc_spec: TLCAgentOutput) -> Any:
+    """A tiny TLC subgraph runnable with 1 interrupt, then deterministic ratio fill."""
 
+    def _write_spec(state: TLCAgentGraphState) -> dict[str, Any]:
+        _ = state
+        return {"tlc_spec": tlc_spec.model_copy(update={"confirmed": False})}
 
-def _auto_approve_plan(_state: TLCState) -> dict[str, Any]:
-    """Test stub: skip interrupt() and auto-approve the plan."""
-    return {"plan_approved": True}
+    def _user_confirm(state: TLCAgentGraphState) -> dict[str, Any]:
+        assert state.tlc_spec is not None
+        payload = {"message": "Please confirm the TLC spec.", "args": {"tlc_spec": state.tlc_spec.model_dump(mode="json")}}
+        resume_raw = lg_interrupt(payload)
+        resume = (
+            OperationResume.model_validate(resume_raw.get("resume", resume_raw))
+            if isinstance(resume_raw, dict)
+            else OperationResume.model_validate(resume_raw)
+        )
+        return {"user_approved": bool(resume.approval)}
+
+    def _route_confirm(state: TLCAgentGraphState) -> str:
+        return "confirm" if state.user_approved else "revise"
+
+    def _fill_ratio(state: TLCAgentGraphState) -> dict[str, Any]:
+        _ = state
+        # Use the deterministic stubbed spec and mark confirmed; mimic TLCAgent's final output shape.
+        return {"tlc_spec": tlc_spec.model_copy(update={"confirmed": True})}
+
+    g = StateGraph(TLCAgentGraphState)
+    g.add_node("write_spec", _write_spec)
+    g.add_node("user_confirm", _user_confirm)
+    g.add_node("fill_ratio", _fill_ratio)
+    g.add_edge(START, "write_spec")
+    g.add_edge("write_spec", "user_confirm")
+    g.add_conditional_edges("user_confirm", _route_confirm, {"revise": "user_confirm", "confirm": "fill_ratio"})
+    g.add_edge("fill_ratio", END)
+    return g.compile()
 
 
 def _build_agent() -> Any:
@@ -84,7 +127,18 @@ def test_bottom_line_handler_flow(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         return _op_response(operation_id="watchdog_test", input_value=user_input, output_value=out)
 
+    def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
+        # Parallel start runs intention detection even if admittance rejects; keep this test offline by stubbing it.
+        out = IntentionDetectionFin(
+            matched_goal_type=GoalTypeEnum.CONSULTING,
+            reason="stub",
+            winner_id=GoalTypeEnum.CONSULTING.value,
+            evidences=[],
+        )
+        return _op_response(operation_id="intention_test", input_value=user_input, output_value=out)
+
     monkeypatch.setattr(node_mapper.watch_dog, "run", _watchdog_run)
+    monkeypatch.setattr(node_mapper.intention_detect_agent, "run", _intention_run)
 
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="what's the weather?")]
@@ -119,7 +173,6 @@ def test_consulting_route(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(node_mapper.watch_dog, "run", _watchdog_run)
     monkeypatch.setattr(node_mapper.intention_detect_agent, "run", _intention_run)
-    monkeypatch.setattr(node_mapper, "request_user_confirm", _auto_confirm_intention)
 
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="帮我推荐一个 TLC 条件")]
@@ -151,21 +204,14 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         return _op_response(operation_id="intention_test", input_value=user_input, output_value=out)
 
-    def _planner_run(*, user_input: list[Any]) -> OperationResponse[list[Any], PlanningAgentOutput]:
-        step = PlanStep(
-            id="s1",
-            title="TLC step",
-            executor=node_mapper.ExecutorKey.TLC_AGENT,
-            args={},
-            requires_human_approval=False,
-            status=ExecutionStatusEnum.NOT_STARTED,
-            output=None,
-        )
-        out = PlanningAgentOutput(plan_steps=[step], plan_hash="hash_test")
-        return _op_response(operation_id="planner_test", input_value=user_input, output_value=out)
+    monkeypatch.setattr(node_mapper.watch_dog, "run", _watchdog_run)
+    monkeypatch.setattr(node_mapper.intention_detect_agent, "run", _intention_run)
+    monkeypatch.setattr(Planner, "run", _stub_planner_run)
+    monkeypatch.setattr(HumanInLoop, "review_plan", _auto_approve_plan_review)
 
     tlc_spec = TLCAgentOutput(
         compounds=[Compound(compound_name="Aspirin", smiles=None)],
+        resp_msg="ok",
         spec=[
             TLCCompoundSpecItem(
                 compound_name="Aspirin",
@@ -180,13 +226,8 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
         ],
         confirmed=True,
     )
-
-    monkeypatch.setattr(node_mapper.watch_dog, "run", _watchdog_run)
-    monkeypatch.setattr(node_mapper.intention_detect_agent, "run", _intention_run)
-    monkeypatch.setattr(node_mapper.planner_agent, "run", _planner_run)
-    monkeypatch.setattr(node_mapper, "request_user_confirm", _auto_confirm_intention)
-    monkeypatch.setattr(node_mapper, "plan_review_node", _auto_approve_plan)
-    monkeypatch.setattr(node_mapper.tlc_agent, "subgraph", _stub_tlc_subgraph(tlc_spec=tlc_spec))
+    stub_tlc = type("StubTLC", (), {"compiled": _stub_tlc_compiled_no_hitl(tlc_spec=tlc_spec)})()
+    monkeypatch.setattr(main_mod, "tlc_agent_subgraph", stub_tlc)
 
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="我要做 TLC 点板并生成条件")]
@@ -226,8 +267,8 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
     LangGraph recommended: test streaming + HITL by catching `__interrupt__` and resuming with Command(resume=...).
 
     This test covers two interrupts in a single run:
-    1) intention confirmation
-    2) plan review
+    1) plan review (planner subgraph)
+    2) TLC spec confirmation (TLC subgraph)
     """
 
     def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
@@ -249,21 +290,12 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
         )
         return _op_response(operation_id="intention_test", input_value=user_input, output_value=out)
 
-    def _planner_run(*, user_input: list[Any]) -> OperationResponse[list[Any], PlanningAgentOutput]:
-        step = PlanStep(
-            id="s1",
-            title="TLC step",
-            executor=node_mapper.ExecutorKey.TLC_AGENT,
-            args={},
-            requires_human_approval=False,  # avoid extra HITL in dispatch_todo
-            status=ExecutionStatusEnum.NOT_STARTED,
-            output=None,
-        )
-        out = PlanningAgentOutput(plan_steps=[step], plan_hash="hash_test")
-        return _op_response(operation_id="planner_test", input_value=user_input, output_value=out)
-
+    monkeypatch.setattr(node_mapper.watch_dog, "run", _watchdog_run)
+    monkeypatch.setattr(node_mapper.intention_detect_agent, "run", _intention_run)
+    monkeypatch.setattr(Planner, "run", _stub_planner_run)
     tlc_spec = TLCAgentOutput(
         compounds=[Compound(compound_name="Aspirin", smiles=None)],
+        resp_msg="ok",
         spec=[
             TLCCompoundSpecItem(
                 compound_name="Aspirin",
@@ -276,15 +308,10 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
                 backend="test",
             ),
         ],
-        confirmed=True,
+        confirmed=False,
     )
-
-    # Keep real interrupting nodes: request_user_confirm + plan_review_node.
-    # Stub all LLM calls + TLC subgraph to avoid network/tooling.
-    monkeypatch.setattr(node_mapper.watch_dog, "run", _watchdog_run)
-    monkeypatch.setattr(node_mapper.intention_detect_agent, "run", _intention_run)
-    monkeypatch.setattr(node_mapper.planner_agent, "run", _planner_run)
-    monkeypatch.setattr(node_mapper.tlc_agent, "subgraph", _stub_tlc_subgraph(tlc_spec=tlc_spec))
+    stub_tlc = type("StubTLC", (), {"compiled": _stub_tlc_compiled_with_hitl(tlc_spec=tlc_spec)})()
+    monkeypatch.setattr(main_mod, "tlc_agent_subgraph", stub_tlc)
 
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="我要做 TLC 点板并生成条件")]

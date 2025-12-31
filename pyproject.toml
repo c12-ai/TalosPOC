@@ -35,6 +35,7 @@ dev = [
     "notebook>=7.4.5",
     "pandas>=2.3.3",
     "pandoc>=2.4",
+    "pillow>=12.0.0",
     "pytest>=8.4.1",
     "pytest-asyncio>=0.25.0",
     "pyzmq>=27.0.1",
