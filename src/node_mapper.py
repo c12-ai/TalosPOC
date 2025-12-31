@@ -258,25 +258,6 @@ def finalize_tlc_step_node(state: TLCState) -> dict[str, Any]:
 # - Keep routing rules here; keep business logic in agents.
 
 
-def route_admittance(state: TLCState) -> str:
-    """
-    Route to the next node after the user admittance gate.
-
-    This router reads `state.admittance_state` and maps it to the graph route keys (`"yes"`/`"no"`). If the state is missing, it defaults to
-    rejection (`NO`) to keep the flow safe. It should not mutate state.
-
-    Args:
-        state: Current workflow state.
-
-    Returns:
-        Route key `"yes"` or `"no"`.
-
-    """
-    decision = state.admittance_state or AdmittanceState.NO
-    logger.info("Routing based on admittance_state={}", decision.value)
-    return decision.value
-
-
 def stage_dispatcher(state: TLCState) -> dict[str, Any]:
     """
     Compute the next stage and write it into `state.mode`.
@@ -300,6 +281,7 @@ def stage_dispatcher(state: TLCState) -> dict[str, Any]:
     messages = _ensure_messages(state)
     updated_messages = list(messages)
 
+    # Append admittance and intention detection result to messages
     if state.admittance is not None:
         updated_messages.append(
             AIMessage(

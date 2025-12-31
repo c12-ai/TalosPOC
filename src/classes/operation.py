@@ -8,21 +8,10 @@ T = TypeVar("T")
 K = TypeVar("K")
 
 
-class OperationRouting(str, Enum):
-    PROCEED = "proceed"
-    REVISE = "revise"
-
-
-class OperationRunning(BaseModel):
-    pass
-
-
 class OperationResume(BaseModel):
     approval: bool = Field(..., description="Whether the operation is approved to resume.")
     comment: str | None = Field(default=None, description="Human reviewing feedback")
-    data: Any | None = Field(
-        default=None, description="Optional structured data payload from UI (e.g., edited form JSON)"
-    )
+    data: Any | None = Field(default=None, description="Optional structured data payload from UI (e.g., edited form JSON)")
 
 
 class OperationResponse[T, K](BaseModel):
