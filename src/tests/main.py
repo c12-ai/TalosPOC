@@ -9,9 +9,9 @@ from typing import Any
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.types import Command, Interrupt
 
-from src.classes.agent_flow_state import TLCState
-from src.classes.operation import OperationResume
 from src.main import create_talos_agent
+from src.models.core import AgentState
+from src.models.operation import OperationResume
 from src.utils.tools import _pretty
 
 
@@ -68,7 +68,7 @@ def main() -> None:
             break
 
         conversation.append(HumanMessage(content=user_text))
-        next_input: TLCState | Command = TLCState(messages=list(conversation), user_input=list(conversation))
+        next_input: AgentState | Command = AgentState(messages=list(conversation), user_input=list(conversation))
         last_state: dict[str, Any] | None = None
 
         while True:

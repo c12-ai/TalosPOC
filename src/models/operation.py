@@ -1,10 +1,8 @@
-from enum import Enum
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field
 
 T = TypeVar("T")
-
 K = TypeVar("K")
 
 
@@ -35,3 +33,5 @@ class OperationInterruptPayload(BaseModel):
 
     message: str = Field(..., description="Message describe the current operation that need human approve")
     args: Any = Field(..., description="other meta data come alone with operation")
+
+

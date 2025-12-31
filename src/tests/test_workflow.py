@@ -9,24 +9,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Interrupt
 from langgraph.types import interrupt as lg_interrupt
 
-import src.main as main_mod
 from src import node_mapper
-from src.agents.tlc_agent import TLCAgentGraphState
-from src.classes.agent_flow_state import TLCState
-from src.classes.operation import OperationResponse, OperationResume
-from src.classes.system_enum import ExecutionStatusEnum, GoalTypeEnum, TLCPhase
-from src.classes.system_state import (
-    Compound,
-    IntentionDetectionFin,
-    PlanningAgentOutput,
-    PlanStep,
-    TLCAgentOutput,
-    TLCCompoundSpecItem,
-    UserAdmittance,
-)
-from src.functions.human_interaction import HumanInLoop
-from src.functions.planner import Planner
+from src.agents.coordinators.human_interaction import HumanInLoop
+from src.agents.coordinators.planner import Planner
+from src.agents.specialists.tlc_agent import TLCAgentGraphState
 from src.main import create_talos_agent
+from src.models.core import AgentState, IntentionDetectionFin, PlanningAgentOutput, PlanStep, UserAdmittance
+from src.models.enums import ExecutionStatusEnum, ExecutorKey, GoalTypeEnum
+from src.models.operation import OperationResponse, OperationResume
+from src.models.tlc import Compound, TLCAgentOutput, TLCCompoundSpecItem, TLCPhase
 
 
 def _op_response(*, operation_id: str, input_value: Any, output_value: Any) -> OperationResponse[Any, Any]:
@@ -43,7 +34,7 @@ def _stub_planner_run(_self: Planner, *, user_input: list[AnyMessage]) -> Operat
     step = PlanStep(
         id="s1",
         title="TLC step",
-        executor=node_mapper.ExecutorKey.TLC_AGENT,
+        executor=ExecutorKey.TLC_AGENT,
         args={},
         requires_human_approval=False,  # avoid extra HITL in specialist_dispatcher
         status=ExecutionStatusEnum.NOT_STARTED,
@@ -142,7 +133,7 @@ def test_bottom_line_handler_flow(monkeypatch: pytest.MonkeyPatch) -> None:
 
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="what's the weather?")]
-    init = TLCState(messages=msgs, user_input=msgs)
+    init = AgentState(messages=msgs, user_input=msgs)
     result = agent.invoke(init, config={"configurable": {"thread_id": "t-bottom-line"}})
 
     assert result["bottom_line_feedback"] == "out of domain"
@@ -176,7 +167,7 @@ def test_consulting_route(monkeypatch: pytest.MonkeyPatch) -> None:
 
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="帮我推荐一个 TLC 条件")]
-    init = TLCState(messages=msgs, user_input=msgs)
+    init = AgentState(messages=msgs, user_input=msgs)
     result = agent.invoke(init, config={"configurable": {"thread_id": "t-consult"}})
 
     assert any("[consulting]" in m.content for m in result["messages"])
@@ -227,17 +218,21 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
         confirmed=True,
     )
     stub_tlc = type("StubTLC", (), {"compiled": _stub_tlc_compiled_no_hitl(tlc_spec=tlc_spec)})()
-    monkeypatch.setattr(main_mod, "tlc_agent_subgraph", stub_tlc)
+    monkeypatch.setattr(node_mapper.tlc_agent, "compiled", stub_tlc.compiled)
 
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="我要做 TLC 点板并生成条件")]
-    init = TLCState(messages=msgs, user_input=msgs)
+    init = AgentState(messages=msgs, user_input=msgs)
     result = agent.invoke(init, config={"configurable": {"thread_id": "t-exec-tlc"}})
 
     plan: OperationResponse[Any, PlanningAgentOutput] = result["plan"]
     assert plan.output.plan_steps[0].status == ExecutionStatusEnum.COMPLETED
-    assert result["tlc_phase"] == TLCPhase.DONE
-    assert result["tlc_spec"].confirmed is True
+    tlc = result["tlc"]
+    phase = tlc["phase"] if isinstance(tlc, dict) else tlc.phase
+    spec = tlc["spec"] if isinstance(tlc, dict) else tlc.spec
+    assert phase == TLCPhase.DONE
+    assert spec is not None
+    assert spec.confirmed is True
 
 
 def test_individual_node_execution_user_admittance(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,13 +306,13 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
         confirmed=False,
     )
     stub_tlc = type("StubTLC", (), {"compiled": _stub_tlc_compiled_with_hitl(tlc_spec=tlc_spec)})()
-    monkeypatch.setattr(main_mod, "tlc_agent_subgraph", stub_tlc)
+    monkeypatch.setattr(node_mapper.tlc_agent, "compiled", stub_tlc.compiled)
 
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="我要做 TLC 点板并生成条件")]
     config: dict[str, Any] = {"configurable": {"thread_id": "t-stream-hitl"}}
 
-    next_input: TLCState | Command = TLCState(messages=msgs, user_input=msgs)
+    next_input: AgentState | Command = AgentState(messages=msgs, user_input=msgs)
     last_state: dict[str, Any] | None = None
     interrupts_seen = 0
 
@@ -342,6 +337,9 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
 
     assert interrupts_seen == 2
     assert last_state is not None
-    assert last_state["tlc_spec"].confirmed is True
+    tlc = last_state["tlc"]
+    spec = tlc["spec"] if isinstance(tlc, dict) else tlc.spec
+    assert spec is not None
+    assert spec.confirmed is True
     plan: OperationResponse[Any, PlanningAgentOutput] = last_state["plan"]
     assert plan.output.plan_steps[0].status == ExecutionStatusEnum.COMPLETED

@@ -12,13 +12,20 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Interrupt, interrupt
-from pydantic import BaseModel, ConfigDict, Field
 
-from src.classes.operation import OperationInterruptPayload, OperationResponse, OperationResume
-from src.classes.PROMPT import TLC_AGENT_PROMPT
-from src.classes.system_state import Compound, TLCAgentOutput, TLCAIOutput, TLCCompoundSpecItem, TLCRatioPayload, TLCRatioResult
+from src.models.operation import OperationInterruptPayload, OperationResponse, OperationResume
+from src.models.tlc import (
+    Compound,
+    TLCAgentGraphState,
+    TLCAgentOutput,
+    TLCAIOutput,
+    TLCCompoundSpecItem,
+    TLCRatioPayload,
+    TLCRatioResult,
+)
 from src.utils.logging_config import logger
 from src.utils.models import TLC_MODEL
+from src.utils.PROMPT import TLC_AGENT_PROMPT
 from src.utils.tools import coerce_operation_resume
 
 if TYPE_CHECKING:
@@ -59,19 +66,6 @@ def get_recommended_ratio(compounds: list[Compound] | None = None) -> list[TLCRa
             results.append(parsed.tlc_parameters)
 
     return results
-
-
-class TLCAgentGraphState(BaseModel):
-    """LangGraph subgraph state schema for TLCAgent (structure-only POC)."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
-
-    # Parent graph will pass `messages` and may pass existing `tlc_spec`.
-    messages: list[AnyMessage] = Field(default_factory=list)
-    tlc_spec: TLCAgentOutput | None = None
-
-    # Internal-only routing flag.
-    user_approved: bool | None = None
 
 
 class TLCAgent:
@@ -115,7 +109,6 @@ class TLCAgent:
 
         checkpointer = MemorySaver() if with_checkpointer else None
 
-        # Attributes
         self.compiled = subgraph.compile(checkpointer=checkpointer)
         self._agent = create_agent(
             model=TLC_MODEL,
@@ -131,47 +124,7 @@ class TLCAgent:
         approval_handler: Callable[[dict[str, Any]], OperationResume] | None = None,
         thread_id: str = str(uuid.uuid4()),
     ) -> OperationResponse[list[AnyMessage], TLCAgentOutput]:
-        """
-        Unified entrypoint for TLC flow with HITL handling.
-
-        This method provides complete control of the graph execution, handling the HITL loop
-        internally until a user-confirmed result is obtained.
-
-        Args:
-            user_input: Initial user messages
-            current_form: Existing TLC spec to continue from (optional)
-            approval_handler: Callback to get user approval during HITL interrupts.
-                             Receives interrupt payload, returns OperationResume.
-                             If None, runs as subgraph (interrupts bubble up to parent).
-            thread_id: Optional, if None, a random UUID will be generated.
-
-        Returns:
-            OperationResponse with confirmed TLC spec
-
-        HITL Loop Mechanism:
-        - When approval_handler is provided, this method manages the complete HITL loop
-        - Detects interrupts in state, calls approval_handler, resumes with approval data
-        - Continues until tlc_spec.confirmed == True
-        - Returns only when complete
-
-        Usage:
-        1. Standalone with approval handler:
-           ```python
-           def get_approval(interrupt_data: dict) -> OperationResume:
-               # Get user input (from terminal, UI, etc.)
-               return OperationResume(approval=True, comment="", data={})
-
-
-           result = agent.run(user_input=[...], approval_handler=get_approval)
-           ```
-
-        2. As subgraph (approval_handler=None):
-           - Interrupts bubble up to parent graph
-           - Parent handles approval and resumes
-
-        NOTE: Structure-only POC. `extract_compound_and_fill_spec` is intentionally a mock.
-
-        """
+        """Unified entrypoint for TLC flow with HITL handling."""
         if approval_handler is None:
             raise ValueError("approval_handler is required")
 
@@ -187,8 +140,6 @@ class TLCAgent:
         while True:
             last_state = None
 
-            print("Looping...")
-
             for state in self.compiled.stream(next_input, config=config, stream_mode="values"):
                 last_state = state
 
@@ -199,24 +150,14 @@ class TLCAgent:
 
                     interrupt_data = interrupts[0].value
 
-                    # Get user approval via callback
                     resume_payload = approval_handler(interrupt_data)
-
-                    # Resume graph with approval data
                     next_input = Command[tuple[()]](resume=resume_payload.model_dump())
+                    break
 
-                    break  # Break to restart stream with resume
-
-            # Check if we're done (no interrupt in last state)
             if last_state and "__interrupt__" not in last_state:
-                # Extract final result
                 tlc_spec = last_state.get("tlc_spec") if isinstance(last_state, dict) else getattr(last_state, "tlc_spec", None)
-
-                # TODO: Handle case where tlc_spec is not a TLCAgentOutput, or at least verify its RDkit approved object.
                 if tlc_spec and tlc_spec.confirmed:
                     return self._build_response(last_state, list(user_input), start_time)
-
-                # Shouldn't reach here if graph is properly configured
                 raise RuntimeError("Graph completed without confirmation")
 
     @staticmethod
@@ -246,14 +187,8 @@ class TLCAgent:
         )
 
     def _extract_compound_and_fill_spec(self, state: TLCAgentGraphState) -> dict[str, Any]:
-        """
-        Extracting Compound information from user message by call _agent.
-
-        Update everything in the state.tlc_spec with the result from the agent.
-        """
+        """Extract compound info from messages and build tlc_spec draft."""
         result = self._agent.invoke({"messages": state.messages})  # pyright: ignore[reportArgumentType]
-
-        # Take TLCAIOutput from Model response and parse into updated TLC SPEC
         model_resp: TLCAIOutput = result["structured_response"]
 
         updated_spec: TLCAgentOutput = TLCAgentOutput(
@@ -312,7 +247,6 @@ class TLCAgent:
         if resume.approval:
             updates["tlc_spec"] = state.tlc_spec.model_copy(update={"confirmed": True})
 
-        # Optional: allow UI to send edited form JSON in `resume.data`.
         updates_from_data = TLCAgent._coerce_spec(resume.data)
         if isinstance(updates_from_data, TLCAgentOutput):
             updates["tlc_spec"] = updates_from_data
@@ -337,11 +271,10 @@ class TLCAgent:
 tlc_agent_subgraph = TLCAgent()
 
 if __name__ == "__main__":
-    """Interactive terminal test for TLC Agent following LangGraph best practices."""
     import json
 
     def terminal_approval_handler(interrupt_data: dict[str, Any]) -> OperationResume:
-        """Get approval from terminal user."""
+        """Read approval decision from terminal input for demo runs."""
         print(f"\n[Interrupt] {interrupt_data.get('message', 'Confirm?')}")
 
         if args := interrupt_data.get("args"):
@@ -354,11 +287,8 @@ if __name__ == "__main__":
 
         return OperationResume(approval=(approval == "yes"), comment=comment, data={})
 
-    # Initialize agent with checkpointer for HITL
     agent = TLCAgent(with_checkpointer=True)
-
     user_input = input("[user]: ").strip()
-
     result = agent.run(
         user_input=[HumanMessage(content=user_input)],
         approval_handler=terminal_approval_handler,

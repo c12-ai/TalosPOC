@@ -1,15 +1,14 @@
 from datetime import datetime
 
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import after_agent
 from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import AnyMessage
 
-from src.classes.operation import OperationResponse
-from src.classes.PROMPT import INTENTION_DETECTION_SYSTEM_PROMPT
-from src.classes.system_state import IDAIDetermine, IntentionDetectionFin
+from src.models.core import IDAIDetermine, IntentionDetectionFin
+from src.models.operation import OperationResponse
 from src.utils.logging_config import logger
 from src.utils.models import INTENTION_DETECTION_MODEL
+from src.utils.PROMPT import INTENTION_DETECTION_SYSTEM_PROMPT
 
 
 class IntentionDetectionAgent:
@@ -76,3 +75,5 @@ if __name__ == "__main__":
 
     agent = IntentionDetectionAgent()
     agent.run(user_input=[HumanMessage(content="帮我做个 TLC 点板分析")])
+
+

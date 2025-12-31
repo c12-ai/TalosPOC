@@ -1,0 +1,70 @@
+from enum import Enum
+
+from langchain_core.messages import AnyMessage
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class TLCPhase(str, Enum):
+    COLLECTING = "collecting"
+    AWAITING_INFO = "awaiting_info"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    CONFIRMED = "confirmed"
+    DONE = "done"
+
+
+class Compound(BaseModel):
+    compound_name: str = Field(..., description="Compound name, IUPAC standard name, English")
+    smiles: str | None = Field(default=None, description="SMILES expression of the compound")
+
+
+class TLCRatioResult(BaseModel):
+    """MCP server output payload (inner object)."""
+
+    solvent_system: str
+    ratio: str
+    rf_value: float | None = None
+    description: str | None = None
+    origin: str | None = None
+    backend: str | None = None
+
+
+class TLCRatioPayload(BaseModel):
+    """MCP server output payload (outer envelope)."""
+
+    request_id: str
+    compound_name: str
+    smiles: str | None = None
+    tlc_parameters: TLCRatioResult
+    timestamp: str
+
+
+class TLCAIOutput(BaseModel):
+    """Extract compound information from user input text."""
+
+    compounds: list[Compound | None] = Field(default_factory=list, description="List of compounds extracted from the text")
+    resp_msg: str = Field(..., description="Message to user reply / guide next move")
+
+
+class TLCCompoundSpecItem(Compound, TLCRatioResult):
+    """TLC compound spec used for form filling + MCP lookup."""
+
+
+class TLCAgentOutput(TLCAIOutput):
+    spec: list[TLCCompoundSpecItem] = Field(
+        ...,
+        description="List of compound specifications including MCP recommended ratios",
+    )
+    confirmed: bool = Field(default=False, description="Whether the compound form has been confirmed by user/human")
+
+
+class TLCAgentGraphState(BaseModel):
+    """LangGraph subgraph state schema for TLCAgent (structure-only POC)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
+
+    # Parent graph will pass `messages` and may pass existing `tlc_spec`.
+    messages: list[AnyMessage] = Field(default_factory=list)
+    tlc_spec: TLCAgentOutput | None = None
+
+    # Internal-only routing flag.
+    user_approved: bool | None = None

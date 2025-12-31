@@ -6,8 +6,8 @@ from langchain_core.messages import AnyMessage
 from langgraph.types import interrupt
 from pydantic import Field
 
-from src.classes.operation import OperationInterruptPayload, OperationResponse, OperationResume
-from src.classes.system_state import HumanApproval, IntentionDetectionFin, PlanningAgentOutput, PlanStep
+from src.models.core import HumanApproval, IntentionDetectionFin, PlanningAgentOutput, PlanStep
+from src.models.operation import OperationInterruptPayload, OperationResponse, OperationResume
 from src.utils.logging_config import logger
 from src.utils.messages import apply_human_revision, dump_messages_for_human_review
 from src.utils.tools import coerce_operation_resume
@@ -53,7 +53,7 @@ class HumanInLoop:
         """
         HITL confirmation for intention detection.
 
-        Returns a TLCState patch dict: always includes `human_confirmation`,
+        Returns an AgentState patch dict: always includes `human_confirmation`,
         and may include revised `messages`/`user_input` when rejected with edits.
         """
         interrupt_payload = self.build_intention_review_payload(
@@ -174,3 +174,5 @@ class HumanInLoop:
         return value
 
     # endregion
+
+

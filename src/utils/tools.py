@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from src.classes.operation import OperationResume
+from src.models.operation import OperationResume
 
 
 def _jsonable(value: Any) -> Any:

@@ -1,4 +1,4 @@
-![Banner](./static/talos.png)
+![Banner](./assets/talos.png)
 
 Lab Assistance Proof of Concept version
 

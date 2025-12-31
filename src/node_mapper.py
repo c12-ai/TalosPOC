@@ -2,24 +2,20 @@
 LangGraph node glue for the Talos workflow.
 
 This module keeps LangGraph-specific wiring (routing + minimal state patching).
-Business logic should live in `src/functions/` and `src/agents/`.
+Business logic should live in `src/agents/coordinators/` and `src/agents/executors/`.
 """
 
 from typing import Any
 
 from langchain_core.messages import AIMessage
 
-from src.agents.tlc_agent import TLCAgent
-from src.classes.agent_flow_state import TLCState
-from src.classes.system_enum import AdmittanceState, ExecutionStatusEnum, TLCPhase
-from src.classes.system_state import (
-    ExecutorKey,
-    PlanningAgentOutput,
-    PlanStep,
-)
-from src.functions.admittance import WatchDogAgent
-from src.functions.human_interaction import HumanInLoop
-from src.functions.intention_detection import IntentionDetectionAgent
+from src.agents.coordinators.admittance import WatchDogAgent
+from src.agents.coordinators.human_interaction import HumanInLoop
+from src.agents.coordinators.intention_detection import IntentionDetectionAgent
+from src.agents.specialists.tlc_agent import TLCAgent, TLCAgentGraphState
+from src.models.core import AgentState, PlanningAgentOutput, PlanStep
+from src.models.enums import AdmittanceState, ExecutionStatusEnum, ExecutorKey
+from src.models.tlc import TLCAgentOutput, TLCPhase
 from src.utils.logging_config import logger
 from src.utils.messages import apply_human_revision, ensure_messages
 
@@ -37,7 +33,7 @@ _ensure_messages = ensure_messages
 _apply_human_revision = apply_human_revision
 
 
-def _get_plan_output(state: TLCState) -> PlanningAgentOutput:
+def _get_plan_output(state: AgentState) -> PlanningAgentOutput:
     """Get `PlanningAgentOutput` from `state.plan` (raises if missing)."""
     plan = state.plan
     if plan is None:
@@ -45,7 +41,7 @@ def _get_plan_output(state: TLCState) -> PlanningAgentOutput:
     return plan.output
 
 
-def _get_current_step(state: TLCState) -> tuple[int, PlanStep]:
+def _get_current_step(state: AgentState) -> tuple[int, PlanStep]:
     """Return `(cursor, current_step)` from `state.plan_cursor` and `state.plan.output.plan_steps`."""
     cursor = int(state.plan_cursor)
     return cursor, _get_plan_output(state).plan_steps[cursor]
@@ -57,7 +53,7 @@ def _get_current_step(state: TLCState) -> tuple[int, PlanStep]:
 # region <function node and agent wrapper>
 
 
-def user_admittance_node(state: TLCState) -> dict[str, Any]:
+def user_admittance_node(state: AgentState) -> dict[str, Any]:
     """
     Run the domain/capacity gate and write the result into state.
 
@@ -87,7 +83,7 @@ def user_admittance_node(state: TLCState) -> dict[str, Any]:
     }
 
 
-def bottom_line_handler_node(state: TLCState) -> dict[str, Any]:
+def bottom_line_handler_node(state: AgentState) -> dict[str, Any]:
     """
     Return a user-facing rejection message and exit the main flow.
 
@@ -118,7 +114,7 @@ def bottom_line_handler_node(state: TLCState) -> dict[str, Any]:
     return {"messages": updated_messages, "user_input": updated_messages, "bottom_line_feedback": feedback}
 
 
-def intention_detection_node(state: TLCState) -> dict[str, Any]:
+def intention_detection_node(state: AgentState) -> dict[str, Any]:
     """
     Run intention detection and store the result in state.
 
@@ -142,7 +138,7 @@ def intention_detection_node(state: TLCState) -> dict[str, Any]:
     }
 
 
-def consulting_handler_node(state: TLCState) -> dict[str, Any]:
+def consulting_handler_node(state: AgentState) -> dict[str, Any]:
     """
     Placeholder consulting handler.
 
@@ -162,7 +158,7 @@ def consulting_handler_node(state: TLCState) -> dict[str, Any]:
     return {"messages": updated_messages, "user_input": updated_messages}
 
 
-def query_handler_node(state: TLCState) -> dict[str, Any]:
+def query_handler_node(state: AgentState) -> dict[str, Any]:
     """
     Placeholder query handler.
 
@@ -182,13 +178,13 @@ def query_handler_node(state: TLCState) -> dict[str, Any]:
     return {"messages": updated_messages, "user_input": updated_messages}
 
 
-def prepare_tlc_step_node(state: TLCState) -> dict[str, Any]:
+def prepare_tlc_step_node(state: AgentState) -> dict[str, Any]:
     """
     Prepare the current TLC plan step before entering the TLC subgraph.
 
     This node marks the current plan step as `IN_PROGRESS` and normalizes `messages`/`user_input` for the TLC subgraph. If a per-step human review
     provided an edited `input_text`, it is applied as the latest human revision so the subgraph sees the corrected prompt. It also sets
-    `tlc_phase=COLLECTING` to indicate the TLC agent should start/continue its form-filling loop.
+    `tlc.phase=COLLECTING` to indicate the TLC agent should start/continue its form-filling loop.
 
     If `step.args["input_text"]` is present (e.g., from per-step human approval), treat it as the latest human revision and apply it to messages.
 
@@ -196,7 +192,7 @@ def prepare_tlc_step_node(state: TLCState) -> dict[str, Any]:
         state: Current workflow state.
 
     Returns:
-        A state patch with updated `plan`, `messages`/`user_input`, and `tlc_phase=COLLECTING`.
+        A state patch with updated `plan`, `messages`/`user_input`, and `tlc.phase=COLLECTING`.
 
     """
     cursor, step = _get_current_step(state)
@@ -210,14 +206,14 @@ def prepare_tlc_step_node(state: TLCState) -> dict[str, Any]:
         messages = _apply_human_revision(messages, input_text)
 
     logger.info("Preparing TLC step cursor={} id={} executor={}", cursor, step.id, step.executor)
-    return {"plan": state.plan, "messages": messages, "user_input": messages, "tlc_phase": TLCPhase.COLLECTING}
+    return {"plan": state.plan, "messages": messages, "user_input": messages, "tlc": state.tlc.model_copy(update={"phase": TLCPhase.COLLECTING})}
 
 
-def finalize_tlc_step_node(state: TLCState) -> dict[str, Any]:
+def finalize_tlc_step_node(state: AgentState) -> dict[str, Any]:
     """
     Finalize the current TLC plan step after the TLC subgraph completes.
 
-    This node expects `state.tlc_spec` to have been produced/confirmed by the TLC subgraph. It writes the confirmed spec into the current
+    This node expects `state.tlc.spec` to have been produced/confirmed by the TLC subgraph. It writes the confirmed spec into the current
     `PlanStep.output`, marks the step `COMPLETED`, and advances `plan_cursor`. It also sets `tlc_phase=DONE` so upstream nodes can treat the TLC
     execution as finished for this step.
 
@@ -225,16 +221,16 @@ def finalize_tlc_step_node(state: TLCState) -> dict[str, Any]:
         state: Current workflow state.
 
     Returns:
-        A state patch with updated `plan`, `tlc_phase=DONE`, and `plan_cursor` advanced by 1.
+        A state patch with updated `plan`, `tlc.phase=DONE`, and `plan_cursor` advanced by 1.
 
     Raises:
-        ValueError: If `state.tlc_spec` is missing after the TLC subgraph completes.
+        ValueError: If `state.tlc.spec` is missing after the TLC subgraph completes.
 
     """
     cursor, step = _get_current_step(state)
-    approved_spec = state.tlc_spec
+    approved_spec = state.tlc.spec
     if approved_spec is None:
-        raise ValueError("Missing 'tlc_spec' after executing TLC subgraph")
+        raise ValueError("Missing 'tlc.spec' after executing TLC subgraph")
 
     step.output = {
         "agent": "tlc_agent_subgraph",
@@ -245,7 +241,7 @@ def finalize_tlc_step_node(state: TLCState) -> dict[str, Any]:
     step.status = ExecutionStatusEnum.COMPLETED
 
     logger.info("Finalized TLC step cursor={} id={} executor={}", cursor, step.id, step.executor)
-    return {"plan": state.plan, "tlc_phase": TLCPhase.DONE, "plan_cursor": cursor + 1}
+    return {"plan": state.plan, "tlc": state.tlc.model_copy(update={"phase": TLCPhase.DONE}), "plan_cursor": cursor + 1}
 
 
 # endregion
@@ -258,7 +254,7 @@ def finalize_tlc_step_node(state: TLCState) -> dict[str, Any]:
 # - Keep routing rules here; keep business logic in agents.
 
 
-def stage_dispatcher(state: TLCState) -> dict[str, Any]:
+def stage_dispatcher(state: AgentState) -> dict[str, Any]:
     """
     Compute the next stage and write it into `state.mode`.
 
@@ -324,7 +320,7 @@ def stage_dispatcher(state: TLCState) -> dict[str, Any]:
     raise ValueError(f"Unknown matched_goal_type={goal!r}")
 
 
-def route_stage_handler(state: TLCState) -> str:
+def route_stage_handler(state: AgentState) -> str:
     """
     Route to the stage handler based on `state.mode`.
 
@@ -341,7 +337,7 @@ def route_stage_handler(state: TLCState) -> str:
     return str(state.mode or "").strip() or "rejected"
 
 
-def specialist_dispatcher(state: TLCState) -> dict[str, Any]:
+def specialist_dispatcher(state: AgentState) -> dict[str, Any]:
     """
     Normalize the plan cursor and optionally run per-step human approval.
 
@@ -402,7 +398,7 @@ def specialist_dispatcher(state: TLCState) -> dict[str, Any]:
     return updates
 
 
-def route_next_todo(state: TLCState) -> str:
+def route_next_todo(state: AgentState) -> str:
     """
     Route to the next executor node for the current plan step.
 
@@ -430,6 +426,26 @@ def route_next_todo(state: TLCState) -> str:
         return "prepare_tlc_step"
 
     return "done"
+
+
+# endregion
+
+
+# region <executor wrapper>
+def tlc_agent_node(state: AgentState) -> dict[str, Any]:
+    """Run TLC subgraph and map its output into `state.tlc` namespace."""
+    out = tlc_agent.compiled.invoke(TLCAgentGraphState(messages=list(state.messages), tlc_spec=state.tlc.spec))
+
+    tlc_spec = out.get("tlc_spec") if isinstance(out, dict) else None
+    if tlc_spec is not None and not isinstance(tlc_spec, TLCAgentOutput):
+        raise TypeError(f"Expected TLCAgentOutput from tlc subgraph, got {type(tlc_spec)}")
+
+    messages = out.get("messages") if isinstance(out, dict) else None
+    updates: dict[str, Any] = {"tlc": state.tlc.model_copy(update={"spec": tlc_spec})}
+    if isinstance(messages, list) and messages:
+        updates["messages"] = messages
+        updates["user_input"] = messages
+    return updates
 
 
 # endregion

@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import AnyMessage, HumanMessage
 
 if TYPE_CHECKING:
-    from src.classes.agent_flow_state import TLCState
+    from src.models.core import AgentState
 
 
-def ensure_messages(state: TLCState | Mapping[str, Any]) -> list[AnyMessage]:
+def ensure_messages(state: AgentState | Mapping[str, Any]) -> list[AnyMessage]:
     """
     Return a copy of the current conversation messages.
 

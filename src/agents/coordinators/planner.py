@@ -22,13 +22,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.classes.operation import OperationResponse
-from src.classes.PROMPT import PLANNER_SYSTEM_PROMPT
-from src.classes.system_enum import ExecutionStatusEnum
-from src.classes.system_state import ExecutorKey, PlanningAgentOutput, PlanStep
-from src.functions.human_interaction import HumanInLoop
+from src.agents.coordinators.human_interaction import HumanInLoop
+from src.models.core import PlanningAgentOutput, PlanStep
+from src.models.enums import ExecutionStatusEnum, ExecutorKey
+from src.models.operation import OperationResponse
 from src.utils.logging_config import logger
 from src.utils.models import PLANNER_MODEL
+from src.utils.PROMPT import PLANNER_SYSTEM_PROMPT
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -62,9 +62,6 @@ class Planner:
         logger.info("Planner.run triggered with {} messages", len(user_input))
 
         # NOTE: Placeholder planning logic.
-        # The workflow routes to `execute_tlc` if the todo name contains "tlc" (case-insensitive).
-        # PLAN should only contains
-
         plan_steps = [
             PlanStep(
                 id="1",
@@ -196,3 +193,5 @@ if __name__ == "__main__":
     planner = Planner()
     result = planner.run(user_input=[HumanMessage(content="帮我查一下阿司匹林的属性,然后设计一个TLC条件")])
     print(result.model_dump_json(indent=2))
+
+

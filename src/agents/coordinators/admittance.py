@@ -4,11 +4,11 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import StructuredOutputValidationError, ToolStrategy
 from langchain_core.messages import AnyMessage
 
-from src.classes.operation import OperationResponse
-from src.classes.PROMPT import WATCH_DOG_SYSTEM_PROMPT
-from src.classes.system_state import UserAdmittance, WatchDogAIDetermined
+from src.models.core import UserAdmittance, WatchDogAIDetermined
+from src.models.operation import OperationResponse
 from src.utils.logging_config import logger
 from src.utils.models import WATCHDOG_MODEL
+from src.utils.PROMPT import WATCH_DOG_SYSTEM_PROMPT
 from src.utils.settings import ChatModelConfig, settings
 
 
@@ -96,3 +96,5 @@ if __name__ == "__main__":
     watch_dog = WatchDogAgent()
     result = watch_dog.run(user_input=[HumanMessage(content="I want to know the current time.")])
     print(result)
+
+

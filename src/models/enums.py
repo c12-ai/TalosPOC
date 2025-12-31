@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import Enum, StrEnum
 
 
 class AdmittanceState(str, Enum):
@@ -21,9 +21,10 @@ class ExecutionStatusEnum(str, Enum):
     CANCELLED = "cancelled"
 
 
-class TLCPhase(str, Enum):
-    COLLECTING = "collecting"
-    AWAITING_INFO = "awaiting_info"
-    AWAITING_CONFIRMATION = "awaiting_confirmation"
-    CONFIRMED = "confirmed"
-    DONE = "done"
+class ExecutorKey(StrEnum):
+    TLC_AGENT = "tlc_agent.run"
+    # COLUMN_AGENT = "column.recommend"
+    # ROBOT_TLC = "robot.tlc_spot"
+    # PROPERTY_LOOKUP = "property.lookup"
+
+

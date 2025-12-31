@@ -5,14 +5,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from src import node_mapper
-from src.agents.tlc_agent import tlc_agent_subgraph
-from src.classes.agent_flow_state import TLCState
-from src.functions.planner import planner_subgraph
+from src.agents.coordinators.planner import planner_subgraph
+from src.models.core import AgentState
 
 
 def create_talos_workflow() -> StateGraph:
     """Create the Talos workflow definition (uncompiled)."""
-    workflow = StateGraph(TLCState)
+    workflow = StateGraph(AgentState)
 
     # region <router function placeholder>
     workflow.add_node("user_admittance", node_mapper.user_admittance_node)
@@ -26,7 +25,7 @@ def create_talos_workflow() -> StateGraph:
     workflow.add_node("planner", planner_subgraph.compiled)
     workflow.add_node("specialist_dispatcher", node_mapper.specialist_dispatcher)
     workflow.add_node("prepare_tlc_step", node_mapper.prepare_tlc_step_node)
-    workflow.add_node("tlc_agent", tlc_agent_subgraph.compiled)
+    workflow.add_node("tlc_agent", node_mapper.tlc_agent_node)
     workflow.add_node("finalize_tlc_step", node_mapper.finalize_tlc_step_node)
     # workflow.add_node("checkpoint", node_mapper.survey_inspect)
 
@@ -85,7 +84,7 @@ talos_agent = create_talos_agent()
 
 
 def _export_workflow_png() -> None:
-    output_path = Path(__file__).resolve().parents[1] / "static" / "workflow.png"
+    output_path = Path(__file__).resolve().parents[1] / "assets" / "workflow.png"
     talos_agent.get_graph(xray=True).draw_mermaid_png(output_file_path=str(output_path))
 
 

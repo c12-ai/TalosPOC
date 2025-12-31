@@ -6,9 +6,9 @@ from typing import Any
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.types import Command, Interrupt
 
-from src.classes.agent_flow_state import TLCState
-from src.classes.operation import OperationResume
 from src.main import talos_agent
+from src.models.core import AgentState
+from src.models.operation import OperationResume
 from src.utils.tools import _pretty
 
 
@@ -28,7 +28,7 @@ def streaming() -> None:
         ),
     ]
 
-    next_input: TLCState | Command = TLCState(user_input=conversation, messages=conversation)
+    next_input: AgentState | Command = AgentState(user_input=conversation, messages=conversation)
 
     while True:
         for state in talos_agent.stream(next_input, config=config, stream_mode="values"):
