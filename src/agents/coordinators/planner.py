@@ -7,6 +7,8 @@ Planner Agent: Generate a plan based on user input. The output should be a seque
 Guardrails:
 1. Plan freeze, once approved, we will have a none changeable plan hash, if user want to change / edit it, we need to re-enter the audit workflow.
 2. 幂等/续跑: 基于 step.id + status, 已完成的不重复跑; 失败标记 on_hold 并记录错误
+
+TODO: Clean Code
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from src.models.core import PlanningAgentOutput, PlanStep
 from src.models.enums import ExecutionStatusEnum, ExecutorKey
 from src.models.operation import OperationResponse
 from src.utils.logging_config import logger
+from src.utils.messages import only_human_messages
 from src.utils.models import PLANNER_MODEL
 from src.utils.PROMPT import PLANNER_SYSTEM_PROMPT
 
@@ -164,7 +167,7 @@ class PlannerSubgraph:
             "plan_cursor": 0,
             "plan_approved": False,
             "messages": updated_messages,
-            "user_input": updated_messages,
+            "user_input": only_human_messages(updated_messages),
         }
 
     def _plan_review(self, state: PlannerGraphState) -> dict[str, Any]:
@@ -193,5 +196,3 @@ if __name__ == "__main__":
     planner = Planner()
     result = planner.run(user_input=[HumanMessage(content="帮我查一下阿司匹林的属性,然后设计一个TLC条件")])
     print(result.model_dump_json(indent=2))
-
-

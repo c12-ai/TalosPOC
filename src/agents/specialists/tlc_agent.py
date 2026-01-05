@@ -1,8 +1,15 @@
+"""
+TLCAgent is a specialist agent that is responsible for filling the TLC spec with user and then recommend develop solvent and ratio.
+
+TODO: Code needs to be cleaned up.
+"""
+
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 from langchain.agents import create_agent
@@ -13,7 +20,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Interrupt, interrupt
 
-from src.models.operation import OperationInterruptPayload, OperationResponse, OperationResume
+from src.models.operation import OperationInterruptPayload, OperationResponse
 from src.models.tlc import (
     Compound,
     TLCAgentGraphState,
@@ -27,9 +34,6 @@ from src.utils.logging_config import logger
 from src.utils.models import TLC_MODEL
 from src.utils.PROMPT import TLC_AGENT_PROMPT
 from src.utils.tools import coerce_operation_resume
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 
 def get_recommended_ratio(compounds: list[Compound] | None = None) -> list[TLCRatioResult]:
@@ -49,11 +53,12 @@ def get_recommended_ratio(compounds: list[Compound] | None = None) -> list[TLCRa
 
         payload: dict[str, str] = {"model_backend": "GAT"}
         if compound_name:
-            payload["compound_name"] = compound_name
+            payload["compound_name"] = "aspirin"  # TODO: substitute with compound_name
         if smiles:
-            payload["smiles"] = smiles
+            payload["smiles"] = ""  # TODO: substitute with smiles
 
         try:
+            t0 = time.perf_counter()
             with httpx.Client(timeout=20.0) as client:
                 resp = client.post(url, json=payload)
                 resp.raise_for_status()
@@ -64,6 +69,13 @@ def get_recommended_ratio(compounds: list[Compound] | None = None) -> list[TLCRa
             raise
         else:
             results.append(parsed.tlc_parameters)
+            logger.info(
+                "TLC ratio lookup ok. idx={} backend={} elapsed_ms={}",
+                idx,
+                parsed.tlc_parameters.backend,
+                int((time.perf_counter() - t0) * 1000),
+            )
+            logger.info(f"Recommended ratio: {parsed.tlc_parameters}")
 
     return results
 
@@ -116,49 +128,29 @@ class TLCAgent:
             response_format=ProviderStrategy(TLCAIOutput),
         )
 
+    # NOTE: Run() is not necessary actually
+
     def run(
         self,
         *,
-        user_input: list[AnyMessage],
-        current_form: TLCAgentOutput | None = None,
-        approval_handler: Callable[[dict[str, Any]], OperationResume] | None = None,
+        tlc_state: TLCAgentGraphState | Command,
         thread_id: str = str(uuid.uuid4()),
-    ) -> OperationResponse[list[AnyMessage], TLCAgentOutput]:
-        """Unified entrypoint for TLC flow with HITL handling."""
-        if approval_handler is None:
-            raise ValueError("approval_handler is required")
+    ) -> dict[str, Any]:
+        """
+        Unified entrypoint for the TLC subgraph in the main graph.
 
-        start_time = datetime.now()
+        This method intentionally does NOT simulate UI or loop. If the subgraph interrupts (HITL),
+        it should bubble to the outer runtime (server/UI) to resume later.
 
-        next_input: TLCAgentGraphState | Command = TLCAgentGraphState(
-            messages=list(user_input),
-            tlc_spec=current_form,
-        )
+        Args:
+            tlc_state: The current TLC state.
+            thread_id: The thread ID for the conversation.
 
-        config: RunnableConfig = RunnableConfig(configurable={"thread_id": thread_id, "stream_mode": "values"})
+        Returns:
+            The complete state of the TLC subgraph execution.
 
-        while True:
-            last_state = None
-
-            for state in self.compiled.stream(next_input, config=config, stream_mode="values"):
-                last_state = state
-
-                if "__interrupt__" in state:
-                    interrupts: list[Interrupt] = state["__interrupt__"]
-                    if not interrupts:
-                        continue
-
-                    interrupt_data = interrupts[0].value
-
-                    resume_payload = approval_handler(interrupt_data)
-                    next_input = Command[tuple[()]](resume=resume_payload.model_dump())
-                    break
-
-            if last_state and "__interrupt__" not in last_state:
-                tlc_spec = last_state.get("tlc_spec") if isinstance(last_state, dict) else getattr(last_state, "tlc_spec", None)
-                if tlc_spec and tlc_spec.confirmed:
-                    return self._build_response(last_state, list(user_input), start_time)
-                raise RuntimeError("Graph completed without confirmation")
+        """
+        return self.compiled.invoke(tlc_state, config=RunnableConfig(configurable={"thread_id": thread_id}))
 
     @staticmethod
     def _build_response(
@@ -188,8 +180,16 @@ class TLCAgent:
 
     def _extract_compound_and_fill_spec(self, state: TLCAgentGraphState) -> dict[str, Any]:
         """Extract compound info from messages and build tlc_spec draft."""
+        t0 = time.perf_counter()
         result = self._agent.invoke({"messages": state.messages})  # pyright: ignore[reportArgumentType]
         model_resp: TLCAIOutput = result["structured_response"]
+        logger.info(
+            "TLC extract done. messages={} compounds={} resp_len={} elapsed_ms={}",
+            len(state.messages),
+            len([c for c in model_resp.compounds if c is not None]),
+            len(model_resp.resp_msg or ""),
+            int((time.perf_counter() - t0) * 1000),
+        )
 
         updated_spec: TLCAgentOutput = TLCAgentOutput(
             compounds=model_resp.compounds,
@@ -208,6 +208,7 @@ class TLCAgent:
         compounds = [c for c in state.tlc_spec.compounds if c is not None]
         if any((not (c.compound_name or "").strip()) and (not (c.smiles or "").strip()) for c in compounds):
             raise ValueError("Each compound must include at least one of `compound_name` or `smiles` before requesting ratio")
+        t0 = time.perf_counter()
         ratios = get_recommended_ratio(compounds=compounds)
         spec = [
             TLCCompoundSpecItem(
@@ -222,6 +223,11 @@ class TLCAgent:
             )
             for c, r in zip(compounds, ratios, strict=True)
         ]
+        logger.info(
+            "TLC fill_ratio done. compounds={} elapsed_ms={}",
+            len(compounds),
+            int((time.perf_counter() - t0) * 1000),
+        )
 
         return {"tlc_spec": state.tlc_spec.model_copy(update={"spec": spec, "confirmed": True})}
 
@@ -250,6 +256,7 @@ class TLCAgent:
         updates_from_data = TLCAgent._coerce_spec(resume.data)
         if isinstance(updates_from_data, TLCAgentOutput):
             updates["tlc_spec"] = updates_from_data
+            logger.info("TLC user_confirm applied spec from resume.data")
 
         return updates
 
@@ -272,27 +279,25 @@ class TLCAgent:
 # Avoid import side effects and duplicate initialization, instantiate it in node_mapper.py
 
 if __name__ == "__main__":
-    import json
-
-    def terminal_approval_handler(interrupt_data: dict[str, Any]) -> OperationResume:
-        """Read approval decision from terminal input for demo runs."""
-        print(f"\n[Interrupt] {interrupt_data.get('message', 'Confirm?')}")
-
-        if args := interrupt_data.get("args"):
-            print(f"Current spec: {json.dumps(args.get('tlc_spec'), indent=2, ensure_ascii=False)}")
-
-        approval = input("\nApprove? (yes/no): ").strip().lower()
-        comment = ""
-        if approval != "yes":
-            comment = input("Revision comment: ").strip()
-
-        return OperationResume(approval=(approval == "yes"), comment=comment, data={})
+    from src.models.operation import OperationResume
+    from src.utils.tools import _pretty, terminal_approval_handler
 
     agent = TLCAgent(with_checkpointer=True)
-    user_input = input("[user]: ").strip()
-    result = agent.run(
-        user_input=[HumanMessage(content=user_input)],
-        approval_handler=terminal_approval_handler,
-    )
+    thread_id = str(uuid.uuid4())
+    config: RunnableConfig = RunnableConfig(configurable={"thread_id": thread_id})
 
-    print(f"\n✓ TLC Spec Confirmed: {result.output.model_dump_json(indent=2)}\n")
+    text = input("[user]: ").strip() or "我正在进行水杨酸的乙酰化反应制备乙酰水杨酸帮我进行中控监测IPC"
+    print(f"user input: {text}")
+    next_input: TLCAgentGraphState | Command = TLCAgentGraphState(messages=[HumanMessage(content=text)], tlc_spec=None)
+    res: dict[str, Any] = {}
+
+    while res.get("user_approved") is None or not res.get("user_approved"):
+        res = agent.run(tlc_state=next_input, thread_id=thread_id)
+
+        print(_pretty(res))  # which is the complete subgraph state
+
+        if "__interrupt__" in res:  # HITL interrupt
+            interrupts: list[Interrupt] = res["__interrupt__"]
+            print(_pretty(interrupts[0].value))  # payload for UI, not resume
+
+            next_input = terminal_approval_handler(res)

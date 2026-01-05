@@ -13,8 +13,10 @@ class ChatModelConfig(BaseModel):
     """Configuration required to instantiate a chat model."""
 
     model: str = "gpt-5.2"
-    base_url: str = "https://yunwu.ai/v1"
-    api_key: str = "sk-C593NzPP7sczeVcuS89YBb6Ejkw6gofusjXJpv1QDHMln5QM"
+    # model: str = "qwen3-vl-30b-a3b-instruct"
+    # base_url: str = "https://yunwu.ai/v1/"
+    base_url: str = "https://api.openai.com/v1/"
+    # api_key: str = "sk-C593NzPP7sczeVcuS89YBb6Ejkw6gofusjXJpv1QDHMln5QM"
     temperature: float = Field(0.0, ge=0.0, le=2.0)
     top_p: float | None = Field(default=None, ge=0.0, le=1.0)
     seed: int | None = Field(default=None, ge=0)
@@ -29,22 +31,24 @@ class AgentModelSettings(BaseModel):
 
     watchdog: ChatModelConfig = Field(
         default_factory=lambda: ChatModelConfig(
+            # model="gpt-5-mini",
             temperature=0,
-            top_p=0.95,
+            # top_p=0.95,
             seed=42,
         ),
     )
     intention_detection: ChatModelConfig = Field(
         default_factory=lambda: ChatModelConfig(
+            # model="gpt-5-mini",
             temperature=0,
-            top_p=0.95,
+            # top_p=0.95,
             seed=42,
         ),
     )
 
     tlc_agent: ChatModelConfig = Field(
         default_factory=lambda: ChatModelConfig(
-            model="gpt-5-mini",
+            # model="gpt-5-mini",
             temperature=0,
             # top_p=0.95,
             seed=42,
@@ -53,8 +57,9 @@ class AgentModelSettings(BaseModel):
 
     planner: ChatModelConfig = Field(
         default_factory=lambda: ChatModelConfig(
+            # model="gpt-5-mini",
             temperature=0,
-            top_p=0.95,
+            # top_p=0.95,
             seed=42,
         ),
     )

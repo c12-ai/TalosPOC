@@ -5,7 +5,6 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from src import node_mapper
-from src.agents.coordinators.planner import planner_subgraph
 from src.models.core import AgentState
 
 
@@ -22,10 +21,10 @@ def create_talos_workflow() -> StateGraph:
     workflow.add_node("consulting_handler", node_mapper.consulting_handler_node)
     workflow.add_node("query_handler", node_mapper.query_handler_node)
 
-    workflow.add_node("planner", planner_subgraph.compiled)
+    workflow.add_node("planner", node_mapper.planner_agent.compiled)
     workflow.add_node("specialist_dispatcher", node_mapper.specialist_dispatcher)
     workflow.add_node("prepare_tlc_step", node_mapper.prepare_tlc_step_node)
-    workflow.add_node("tlc_agent", node_mapper.tlc_agent_node)
+    workflow.add_node("tlc_agent", node_mapper.tlc_agent.compiled)
     workflow.add_node("finalize_tlc_step", node_mapper.finalize_tlc_step_node)
     # workflow.add_node("checkpoint", node_mapper.survey_inspect)
 
@@ -76,7 +75,9 @@ def create_talos_agent(*, checkpointer: MemorySaver | None = None) -> Any:
     """Compile the Talos workflow into a runnable graph."""
     workflow = create_talos_workflow()
     if checkpointer is None:
-        checkpointer = MemorySaver()
+        # `langgraph dev` (LangGraph API runtime) manages persistence/checkpointing.
+        # Passing a custom checkpointer causes the graph loader to fail.
+        return workflow.compile()
     return workflow.compile(checkpointer=checkpointer)
 
 
@@ -84,30 +85,48 @@ talos_agent = create_talos_agent()
 
 
 def _export_workflow_png() -> None:
+    from src.utils.logging_config import logger
+
     output_path = Path(__file__).resolve().parents[1] / "assets" / "workflow.png"
     talos_agent.get_graph(xray=True).draw_mermaid_png(output_file_path=str(output_path))
+    logger.success(f"Workflow exported to {output_path}")
 
 
 def _test_workflow() -> None:
-    from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+    from langchain_core.messages import HumanMessage
+
+    from src.utils.tools import _pretty, terminal_approval_handler
 
     config = {"configurable": {"thread_id": "test"}}
+    agent = create_talos_agent(checkpointer=MemorySaver())
 
     next_input = AgentState(
-        messages=[],
-        user_input=[],
-        resp_msg=AIMessage(content=""),
+        messages=[HumanMessage(content="我正在进行水杨酸的乙酰化反应制备乙酰水杨酸帮我进行中控监测IPC")],
+        user_input=[HumanMessage(content="我正在进行水杨酸的乙酰化反应制备乙酰水杨酸帮我进行中控监测IPC")],
     )
 
-    for state in talos_agent.stream(next_input, config=config, stream_mode="values"):
-        # print(str(state))
-        print("--------------------------------")
+    while True:
+        for state in agent.stream(next_input, config=config, stream_mode="values"):
+            if "__interrupt__" in state:
+                for itp in state["__interrupt__"]:
+                    print("------------HITL----------------")
+                    print(_pretty(itp.value))
+                    print("--------------------------------")
+
+                next_input = terminal_approval_handler(state)
+                break
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    if sys.argv[0] == "test":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test", action="store_true", help="Test the workflow")
+    parser.add_argument("--export", action="store_true", help="Export the workflow to a PNG file")
+    args = parser.parse_args()
+
+    if args.test:
         _test_workflow()
-    else:
+
+    if args.export:
         _export_workflow_png()

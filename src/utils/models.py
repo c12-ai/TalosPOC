@@ -1,4 +1,10 @@
-"""Factories and singletons for chat models used by agents."""
+"""
+Factories and singletons for chat models used by agents.
+
+Use settings from settings.py.
+
+The model is a singleton, so it will be cached and reused. Written in Strategy pattern.
+"""
 
 from __future__ import annotations
 
@@ -20,19 +26,6 @@ from src.utils.settings import ChatModelConfig, settings
 #         print("END OF PROMPTS")
 
 
-class StaticConfigStrategy:
-    """Build-and-cache strategy using a static model config."""
-
-    def __init__(self, config: ChatModelConfig) -> None:
-        self._config = config
-        self._model: ChatOpenAI | None = None
-
-    def build(self) -> ChatOpenAI:
-        if self._model is None:
-            self._model = ChatOpenAI(**self._config.model_dump(exclude_none=True))
-        return self._model
-
-
 class ModelStrategy(Protocol):
     """
     Strategy interface for constructing chat models.
@@ -45,6 +38,19 @@ class ModelStrategy(Protocol):
     """
 
     def build(self) -> ChatOpenAI: ...
+
+
+class StaticConfigStrategy(ModelStrategy):
+    """Build-and-cache strategy using a static model config."""
+
+    def __init__(self, config: ChatModelConfig) -> None:
+        self._config = config
+        self._model: ChatOpenAI | None = None
+
+    def build(self) -> ChatOpenAI:
+        if self._model is None:
+            self._model = ChatOpenAI(**self._config.model_dump(exclude_none=True))
+        return self._model
 
 
 # This registry maps agent identifiers to their respective model-building strategies.

@@ -9,6 +9,17 @@ if TYPE_CHECKING:
     from src.models.core import AgentState
 
 
+def only_human_messages(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """
+    Return only user-authored messages (HumanMessage) in chronological order.
+
+    `AgentState.messages` is the whole conversation (human + AI + tool). `AgentState.user_input`
+    is meant to track user inputs only, so downstream code can safely use it without accidentally
+    including assistant traces.
+    """
+    return [m for m in messages if isinstance(m, HumanMessage)]
+
+
 def ensure_messages(state: AgentState | Mapping[str, Any]) -> list[AnyMessage]:
     """
     Return a copy of the current conversation messages.

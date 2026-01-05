@@ -15,6 +15,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.2.1",
     "langchain[openai]>=1.0.8",
     "langgraph>=1.0.3",
+    "langgraph-api>=0.5.26",
     "langgraph-sdk>=0.2.9",
     "langsmith>=0.4.46",
     "loguru>=0.7.3",
@@ -22,6 +23,7 @@ dependencies = [
     "pydantic>=2.11.7",
     "pydantic-settings>=2.12.0",
     "python-dotenv>=1.0.0",
+    "rdkit>=2025.9.3",
 ]
 
 [dependency-groups]

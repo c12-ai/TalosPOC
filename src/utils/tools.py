@@ -2,9 +2,11 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from langgraph.types import Command, Interrupt
 from pydantic import BaseModel
 
 from src.models.operation import OperationResume
+from src.utils.logging_config import logger
 
 
 def _jsonable(value: Any) -> Any:
@@ -49,3 +51,17 @@ def coerce_operation_resume(payload: Any) -> OperationResume:
         return OperationResume.model_validate(dict(payload))
 
     return OperationResume.model_validate(payload)
+
+
+def terminal_approval_handler(state: dict[str, Any]) -> Command:
+    """Terminal approval handler for HITL."""
+    itp: Interrupt = state["__interrupt__"][0]
+
+    user_inp = input(f"\nDo you approve? (y/n): {itp.value['message']} \n")
+
+    approval = user_inp.strip().lower() in {"y", "yes", "approve", "approved"}
+    comment = input("Optional comment (enter to skip): ").strip()
+
+    logger.info(f"Terminal approval handler received: approval={approval}, comment={comment}")
+
+    return Command(resume=OperationResume(approval=approval, comment=comment, data={}).model_dump())

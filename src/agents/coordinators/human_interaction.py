@@ -9,7 +9,7 @@ from pydantic import Field
 from src.models.core import HumanApproval, IntentionDetectionFin, PlanningAgentOutput, PlanStep
 from src.models.operation import OperationInterruptPayload, OperationResponse, OperationResume
 from src.utils.logging_config import logger
-from src.utils.messages import apply_human_revision, dump_messages_for_human_review
+from src.utils.messages import apply_human_revision, dump_messages_for_human_review, only_human_messages
 from src.utils.tools import coerce_operation_resume
 
 DecisionPayload = dict[str, Any]
@@ -76,7 +76,7 @@ class HumanInLoop:
         if not resume.approval and edited_text:
             revised_messages = apply_human_revision(messages, edited_text)
             updates["messages"] = revised_messages
-            updates["user_input"] = revised_messages
+            updates["user_input"] = only_human_messages(revised_messages)
         return updates
 
     def review_plan(self, *, plan_out: PlanningAgentOutput, messages: list[AnyMessage]) -> dict[str, Any]:
@@ -99,7 +99,7 @@ class HumanInLoop:
         if edited_text:
             revised_messages = apply_human_revision(messages, edited_text)
             updates["messages"] = revised_messages
-            updates["user_input"] = revised_messages
+            updates["user_input"] = only_human_messages(revised_messages)
         return updates
 
     def approve_step(self, *, step: PlanStep) -> OperationResume:
@@ -174,5 +174,3 @@ class HumanInLoop:
         return value
 
     # endregion
-
-

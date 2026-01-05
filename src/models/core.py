@@ -1,7 +1,7 @@
 from typing import Any
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, AnyMessage
+from langchain_core.messages import AnyMessage
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.models.enums import AdmittanceState, ExecutionStatusEnum, ExecutorKey, GoalTypeEnum
@@ -84,8 +84,8 @@ class AgentState(BaseModel):
 
     # Received Input
     messages: list[AnyMessage] = Field(default_factory=list, description="The whole conversation messages ordered chronologically.")
-    user_input: list[AnyMessage] = Field(default_factory=list, description="The latest user input message.")
-    resp_msg: AIMessage = Field(..., description="The response message from the latest ran agent.")
+    user_input: list[AnyMessage] = Field(default_factory=list, description="All user input messages (HumanMessage only) ordered chronologically.")
+    # resp_msg: AIMessage = Field(..., description="The response message from the latest ran agent.")
 
     bottom_line_feedback: str | None = None
 
@@ -105,6 +105,8 @@ class AgentState(BaseModel):
 
     # Executor namespaces
     tlc: TLCExecutionState = Field(default_factory=TLCExecutionState)
+    # Compatibility bridge: TLCAgent subgraph reads/writes `tlc_spec` at top-level.
+    tlc_spec: TLCAgentOutput | None = None
 
     # System Stage for Routing purpose
     mode: str | None = None
