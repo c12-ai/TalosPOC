@@ -14,21 +14,20 @@ TODO: Clean Code
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import AIMessage, AnyMessage
+from langchain_core.messages import AnyMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
-from pydantic import BaseModel, ConfigDict, Field
 
-from src.agents.coordinators.human_interaction import HumanInLoop
 from src.models.core import PlanningAgentOutput, PlanStep
 from src.models.enums import ExecutionStatusEnum, ExecutorKey
 from src.models.operation import OperationInterruptPayload, OperationResponse
+from src.models.planner import PlannerGraphState
 from src.presenter import present_review
 from src.utils.logging_config import logger
 from src.utils.messages import MsgUtils
@@ -36,36 +35,49 @@ from src.utils.models import PLANNER_MODEL
 from src.utils.PROMPT import PLANNER_SYSTEM_PROMPT
 from src.utils.tools import coerce_operation_resume
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
-# Registry of executors
-executor_registry: dict[ExecutorKey, Callable[..., Any]] = {}
+class PlannerSubgraph:
+    """Planning subgraph: generate_plan -> plan_review (approve/revise loop)."""
 
+    def __init__(self, *, with_checkpointer: bool = False) -> None:
+        """
+        Build and compile the internal LangGraph subgraph.
 
-class Planner:
-    def __init__(self) -> None:
-        """Initialize the Planner Agent."""
-        self.planner = create_agent(
+        Args:
+            with_checkpointer: If True, compiles with MemorySaver for standalone usage with HITL.
+                               If False (default), parent graph's checkpointer will be used.
+
+        """
+        logger.info("PlannerSubgraph initialized with model={}", PLANNER_MODEL)
+
+        subgraph = StateGraph(PlannerGraphState)
+        subgraph.add_node("generate_plan", self._generate_plan)
+        subgraph.add_node("interrupt_plan_review", self._interrupt_plan_review)
+
+        subgraph.add_edge(START, "generate_plan")
+        subgraph.add_edge("generate_plan", "interrupt_plan_review")
+        subgraph.add_conditional_edges("interrupt_plan_review", self._route_plan_review, {"revise": "generate_plan", "approved": END})
+
+        checkpointer = MemorySaver() if with_checkpointer else None
+        self.compiled = subgraph.compile(checkpointer=checkpointer)
+
+        # Keep the LLM agent initialization here (after compile) to match the TLCAgent pattern and avoid unnecessary init cost when only graph
+        # structure is inspected.
+        self._agent = create_agent(
             model=PLANNER_MODEL,
             response_format=ToolStrategy[PlanningAgentOutput](PlanningAgentOutput),
             system_prompt=PLANNER_SYSTEM_PROMPT,
         )
-        logger.info("Planner initialized")
 
-    def run(self, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], PlanningAgentOutput]:
+    def _plan(self, *, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], PlanningAgentOutput]:
         """
-        Generate a plan based on user input. The output should be a sequence of TODOs: a set of restricted commands.
+        Generate a plan based on user messages.
 
-        Args:
-            user_input (list[AnyMessage]): The user input messages ordered chronologically.
-
-        Returns:
-            OperationResponse[list[AnyMessage], PlanningAgentOutput]: The operation response containing the plan.
-
+        This is a small seam used by the planning node. Tests can monkeypatch this method to make the workflow deterministic without replacing the
+        whole subgraph.
         """
         start_time = datetime.now()
-        logger.info("Planner.run triggered with {} messages", len(user_input))
+        logger.info("PlannerSubgraph._plan triggered with {} messages", len(user_input))
 
         # NOTE: Placeholder planning logic.
         plan_steps = [
@@ -80,11 +92,9 @@ class Planner:
                 output=None,
             ),
         ]
-
         plan = PlanningAgentOutput(plan_steps=plan_steps, plan_hash="MOCK HASH")
 
         end_time = datetime.now()
-
         return OperationResponse[list[AnyMessage], PlanningAgentOutput](
             operation_id=f"planner_{uuid4()}",
             input=user_input,
@@ -92,53 +102,6 @@ class Planner:
             start_time=start_time.isoformat(),
             end_time=end_time.isoformat(),
         )
-
-
-class PlannerGraphState(BaseModel):
-    """LangGraph subgraph state schema for planning + HITL review."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
-
-    messages: list[AnyMessage] = Field(default_factory=list)
-    user_input: list[AnyMessage] = Field(default_factory=list)
-    thinking: list[AnyMessage] = Field(default_factory=list)
-
-    plan: OperationResponse[list[AnyMessage], PlanningAgentOutput] | None = None
-    plan_cursor: int = 0
-    plan_approved: bool = False
-    pending_interrupt: OperationInterruptPayload | None = None
-    revision_text: str | None = None
-
-
-class PlannerSubgraph:
-    """Planning subgraph: generate_plan -> plan_review (approve/revise loop)."""
-
-    def __init__(self, *, with_checkpointer: bool = False) -> None:
-        """Build and compile the internal planning subgraph."""
-        self._planner = Planner()
-        self._human = HumanInLoop()
-
-        subgraph = StateGraph(PlannerGraphState)
-        subgraph.add_node("generate_plan", self._generate_plan)
-        subgraph.add_node("plan_review_present", self._plan_review_present)
-        subgraph.add_node("plan_review_interrupt", self._plan_review_interrupt)
-        subgraph.add_node("plan_revision_present", self._plan_revision_present)
-
-        subgraph.add_edge(START, "generate_plan")
-        subgraph.add_edge("generate_plan", "plan_review_present")
-        subgraph.add_edge("plan_review_present", "plan_review_interrupt")
-        subgraph.add_conditional_edges(
-            "plan_review_interrupt",
-            self._route_plan_review,
-            {
-                "revise": "plan_revision_present",
-                "approved": END,
-            },
-        )
-        subgraph.add_edge("plan_revision_present", "generate_plan")
-
-        checkpointer = MemorySaver() if with_checkpointer else None
-        self.compiled = subgraph.compile(checkpointer=checkpointer)
 
     @staticmethod
     def _ensure_messages(state: PlannerGraphState) -> list[AnyMessage]:
@@ -154,7 +117,7 @@ class PlannerSubgraph:
         work_messages = self._ensure_work_messages(state)
         logger.info("PlannerSubgraph.generate_plan with {} messages", len(work_messages))
 
-        res = self._planner.run(user_input=work_messages)
+        res = self._plan(user_input=work_messages)
         plan_out = res.output
 
         return {
@@ -167,73 +130,62 @@ class PlannerSubgraph:
             ),
         }
 
-    def _plan_review_present(self, state: PlannerGraphState) -> dict[str, Any]:
-        """Presenter step before interrupt: write user-facing review prompt into messages."""
-        if state.plan is None:
-            raise ValueError("Missing 'plan' before plan_review")
-        plan_out = state.plan.output
+    def _interrupt_plan_review(self, state: PlannerGraphState) -> dict[str, Any]:
+        """
+        Interrupt + apply resume for plan review.
 
-        # 1) Build structured payload.
-        base_payload = self._human.build_plan_review_payload(plan_out=plan_out)
+        This mirrors the TLCAgent HITL pattern: build the review payload, interrupt, then either approve (END) or append a revision message and
+        loop back to `generate_plan`.
+        """
+        if state.plan is None:
+            raise ValueError("Missing 'plan' before interrupt_plan_review")
+
+        plan_out = state.plan.output
+        steps_preview = [
+            {
+                "id": s.id,
+                "title": s.title,
+                "executor": str(s.executor),
+                "requires_human_approval": s.requires_human_approval,
+                "status": s.status.value,
+                "args": s.args,
+            }
+            for s in plan_out.plan_steps
+        ]
+        args = {"plan_hash": plan_out.plan_hash, "plan_steps": steps_preview}
         payload = OperationInterruptPayload(
             message=present_review(
                 MsgUtils.only_human_messages(MsgUtils.ensure_messages(state)),  # type: ignore[arg-type]
                 kind="plan_review",
-                args=base_payload.args,
+                args=args,
             ),
-            args=base_payload.args,
+            args=args,
         )
 
-        # 2) Presenter message to UI before interrupt. (Keep history; final presenter will clean.)
-        messages = [*MsgUtils.ensure_messages(state), AIMessage(content=payload.message)]  # type: ignore[arg-type]
+        raw = interrupt(payload.model_dump(mode="json"))
+        resume = coerce_operation_resume(raw)
 
-        return {"messages": messages, "pending_interrupt": payload, "plan_approved": False}
-
-    def _plan_review_interrupt(self, state: PlannerGraphState) -> dict[str, Any]:
-        """Interrupt + apply resume result (approval/edit) after UI response."""
-        if state.pending_interrupt is None:
-            raise ValueError("Missing 'pending_interrupt' before plan_review_interrupt")
-
-        raw = interrupt(state.pending_interrupt.model_dump(mode="json"))
-        resume = self._human.normalize_resume(coerce_operation_resume(raw))
-
-        updates: dict[str, Any] = {"pending_interrupt": None, "plan_approved": bool(resume.approval)}
         if resume.approval:
-            return updates
+            return {"plan_approved": True}
 
+        # On reject: append the revision instruction (if provided) and clear old plan so parent graph won't treat it as executable.
+        messages = MsgUtils.ensure_messages(state)  # type: ignore[arg-type]
         edited_text = (resume.comment or "").strip()
         if edited_text:
-            updates["revision_text"] = edited_text
-        # Explicitly clear old plan on reject, so parent graph won't treat it as executable.
-        updates["plan"] = None
-        updates["plan_cursor"] = 0
-        return updates
+            messages = MsgUtils.append_user_message(messages, edited_text)
 
-    def _plan_revision_present(self, state: PlannerGraphState) -> dict[str, Any]:
-        """
-        Presenter for human revision after plan rejection.
-
-        This node is the only place that appends the revised HumanMessage into UI `messages`.
-        Execution context is derived from human messages and may be overridden via `thinking` markers.
-        """
-        edited_text = (state.revision_text or "").strip()
-        if not edited_text:
-            return {"revision_text": None}
-
-        messages = [*list(state.messages), HumanMessage(content=edited_text)]
-        return {"messages": messages, "revision_text": None}
+        return {"messages": messages, "plan": None, "plan_cursor": 0, "plan_approved": False}
 
     @staticmethod
     def _route_plan_review(state: PlannerGraphState) -> str:
         return "approved" if state.plan_approved else "revise"
 
 
-planner_subgraph = PlannerSubgraph()
-
-
 if __name__ == "__main__":
-    from langchain_core.messages import HumanMessage
+    from pathlib import Path
 
-    planner = Planner()
-    result = planner.run(user_input=[HumanMessage(content="帮我查一下阿司匹林的属性,然后设计一个TLC条件")])
-    print(result.model_dump_json(indent=2))
+    planner = PlannerSubgraph()
+
+    output_path = Path(__file__).resolve().parents[3] / "assets" / "planner_graph.png"
+    planner.compiled.get_graph(xray=True).draw_mermaid_png(output_file_path=str(output_path))
+    logger.success(f"Workflow exported to {output_path}")

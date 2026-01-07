@@ -9,21 +9,22 @@ import json
 from typing import Any
 
 from langchain_core.messages import SystemMessage
+from langgraph.types import interrupt
 
 from src.agents.coordinators.admittance import WatchDogAgent
-from src.agents.coordinators.human_interaction import HumanInLoop
 from src.agents.coordinators.intention_detection import IntentionDetectionAgent
 from src.agents.coordinators.planner import PlannerSubgraph
 from src.agents.specialists.tlc_agent import TLCAgent
 from src.models.core import AgentState, PlanningAgentOutput, PlanStep
 from src.models.enums import AdmittanceState, ExecutionStatusEnum, ExecutorKey, TLCPhase
+from src.models.operation import OperationInterruptPayload
 from src.models.tlc import TLCExecutionState
 from src.presenter import present_final
 from src.utils.logging_config import logger
 from src.utils.messages import MsgUtils
+from src.utils.tools import coerce_operation_resume
 
 watch_dog = WatchDogAgent()
-human_interact_agent = HumanInLoop()
 intention_detect_agent = IntentionDetectionAgent()
 tlc_agent = TLCAgent()
 planner_agent = PlannerSubgraph()
@@ -355,7 +356,21 @@ def specialist_dispatcher(state: AgentState) -> dict[str, Any]:
 
     step = plan_out.plan_steps[cursor]
     if step.requires_human_approval:
-        resume = human_interact_agent.approve_step(step=step)
+        payload = OperationInterruptPayload(
+            message="Approve executing this step? If not, reject; optionally edit input in 'comment'.",
+            args={
+                "step": {
+                    "id": step.id,
+                    "title": step.title,
+                    "executor": str(step.executor),
+                    "args": step.args,
+                    "requires_human_approval": step.requires_human_approval,
+                    "status": step.status.value,
+                },
+            },
+        )
+        raw = interrupt(payload.model_dump(mode="json"))
+        resume = coerce_operation_resume(raw)
 
         if resume.approval:
             step.requires_human_approval = False

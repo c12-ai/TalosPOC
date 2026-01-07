@@ -21,10 +21,12 @@ def create_talos_workflow() -> StateGraph:
     workflow.add_node("consulting_handler", node_mapper.consulting_handler_node)
     workflow.add_node("query_handler", node_mapper.query_handler_node)
 
+    # Subgraph Agents
     workflow.add_node("planner", node_mapper.planner_agent.compiled)
+    workflow.add_node("tlc_agent", node_mapper.tlc_agent.compiled)
+
     workflow.add_node("specialist_dispatcher", node_mapper.specialist_dispatcher)
     workflow.add_node("prepare_tlc_step", node_mapper.prepare_tlc_step_node)
-    workflow.add_node("tlc_agent", node_mapper.tlc_agent.compiled)
     workflow.add_node("finalize_tlc_step", node_mapper.finalize_tlc_step_node)
     workflow.add_node("presenter", node_mapper.presenter_node)
     # workflow.add_node("checkpoint", node_mapper.survey_inspect)

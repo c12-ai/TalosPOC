@@ -17,7 +17,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, Interrupt, interrupt
+from langgraph.types import Command, interrupt
 
 from src.models.enums import TLCPhase
 from src.models.operation import OperationInterruptPayload, OperationResumePayload
@@ -126,7 +126,7 @@ class TLCAgent:
 
     def _extract_compound_and_fill_spec(self, state: TLCAgentGraphState) -> dict[str, Any]:
         """
-        Extract compound info from messages and build tlc.spec draft.
+        Extract compound info from messages and build tlc.spec.
 
         """
         # Step 1. Invoke
@@ -252,7 +252,7 @@ if __name__ == "__main__":
     from pathlib import Path
 
     from src.utils.logging_config import logger
-    from src.utils.tools import _pretty, terminal_approval_handler
+    from src.utils.tools import terminal_approval_handler
 
     agent = TLCAgent(with_checkpointer=True)
 
