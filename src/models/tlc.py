@@ -2,7 +2,6 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.models.enums import TLCPhase
-from src.models.operation import OperationInterruptPayload
 
 # region <TLC MCP>
 

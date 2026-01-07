@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AnyMessage, SystemMessage
 
 from src.utils.models import PLANNER_MODEL
 
@@ -19,7 +19,7 @@ ReviewKind = Literal["plan_review", "tlc_confirm"]
 
 
 FINAL_SYSTEM_PROMPT = """
-你是 Talos (实验室智能助手) 的 Presenter。
+你是 Talos (实验室智能助手) 的 Presenter总结最近一步的操作，并简短的描述给用户50字以内的答复。
 
 要求:
 - 你只输出给用户看的最终答复, 不要输出内部日志、工具调用细节、调试信息。

@@ -22,7 +22,7 @@ class ExecutionStatusEnum(str, Enum):
 
 
 class ExecutorKey(StrEnum):
-    TLC_AGENT = "tlc_agent.run"
+    TLC_AGENT = "tlc_agent"
     # COLUMN_AGENT = "column.recommend"
     # ROBOT_TLC = "robot.tlc_spot"
     # PROPERTY_LOOKUP = "property.lookup"

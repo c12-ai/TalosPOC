@@ -11,9 +11,10 @@ from langgraph.types import interrupt as lg_interrupt
 
 from src import node_mapper
 from src.main import create_talos_agent
-from src.models.core import AgentState, IntentionDetectionFin, PlanningAgentOutput, PlanStep, UserAdmittance
+from src.models.core import AgentState, IntentionDetectionFin, UserAdmittance
 from src.models.enums import ExecutionStatusEnum, ExecutorKey, GoalTypeEnum, TLCPhase
 from src.models.operation import OperationInterruptPayload, OperationResponse, OperationResumePayload
+from src.models.planner import PlannerAgentOutput, PlanStep
 from src.models.tlc import Compound, TLCAgentGraphState, TLCAgentOutput, TLCCompoundSpecItem
 from src.utils.tools import coerce_operation_resume
 
@@ -28,26 +29,24 @@ def _op_response(*, operation_id: str, input_value: Any, output_value: Any) -> O
     )
 
 
-def _stub_planner_plan(*, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], PlanningAgentOutput]:
+def _stub_planner_plan(*, user_input: list[AnyMessage]) -> PlannerAgentOutput:
+    _ = user_input
     step = PlanStep(
         id="s1",
         title="TLC step",
         executor=ExecutorKey.TLC_AGENT,
         args={},
-        requires_human_approval=False,  # avoid extra HITL in specialist_dispatcher
         status=ExecutionStatusEnum.NOT_STARTED,
         output=None,
     )
-    out = PlanningAgentOutput(plan_steps=[step], plan_hash="hash_test")
-    return _op_response(operation_id="planner_test", input_value=user_input, output_value=out)
+    return PlannerAgentOutput(plan_steps=[step], plan_hash="hash_test", user_approval=True)
 
 
-def _stub_planner_compiled_no_hitl(*, plan_out: PlanningAgentOutput) -> Any:
-    """A tiny planner subgraph-as-node runnable that writes `plan` + `plan_approved=True` (no interrupts)."""
+def _stub_planner_compiled_no_hitl(*, plan_out: PlannerAgentOutput) -> Any:
+    """A tiny planner subgraph-as-node runnable that writes `plan` (no interrupts)."""
 
     def _finish(state: AgentState) -> dict[str, Any]:
-        plan = _op_response(operation_id="planner_test", input_value=list(state.messages), output_value=plan_out)
-        return {"plan": plan, "plan_cursor": 0, "plan_approved": True, "messages": list(state.messages)}
+        return {"plan": plan_out, "plan_cursor": 0, "messages": list(state.messages)}
 
     g = StateGraph(AgentState)
     g.add_node("finish", _finish)
@@ -208,11 +207,10 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
         title="TLC step",
         executor=ExecutorKey.TLC_AGENT,
         args={},
-        requires_human_approval=False,  # avoid extra HITL in specialist_dispatcher
         status=ExecutionStatusEnum.NOT_STARTED,
         output=None,
     )
-    plan_out = PlanningAgentOutput(plan_steps=[step], plan_hash="hash_test")
+    plan_out = PlannerAgentOutput(plan_steps=[step], plan_hash="hash_test", user_approval=True)
     stub_planner = type("StubPlanner", (), {"compiled": _stub_planner_compiled_no_hitl(plan_out=plan_out)})()
     monkeypatch.setattr(node_mapper.planner_agent, "compiled", stub_planner.compiled)
 
@@ -240,8 +238,8 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     init = AgentState(messages=msgs)
     result = agent.invoke(init, config={"configurable": {"thread_id": "t-exec-tlc"}})
 
-    plan: OperationResponse[Any, PlanningAgentOutput] = result["plan"]
-    assert plan.output.plan_steps[0].status == ExecutionStatusEnum.COMPLETED
+    plan: PlannerAgentOutput = result["plan"]
+    assert plan.plan_steps[0].status == ExecutionStatusEnum.COMPLETED
     tlc = result["tlc"]
     phase = tlc["phase"] if isinstance(tlc, dict) else tlc.phase
     spec = tlc["spec"] if isinstance(tlc, dict) else tlc.spec
@@ -355,5 +353,5 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
     spec = tlc["spec"] if isinstance(tlc, dict) else tlc.spec
     assert spec is not None
     assert spec.confirmed is True
-    plan: OperationResponse[Any, PlanningAgentOutput] = last_state["plan"]
-    assert plan.output.plan_steps[0].status == ExecutionStatusEnum.COMPLETED
+    plan: PlannerAgentOutput = last_state["plan"]
+    assert plan.plan_steps[0].status == ExecutionStatusEnum.COMPLETED

@@ -13,22 +13,19 @@ TODO: Clean Code
 
 from __future__ import annotations
 
-from datetime import datetime
+import uuid
 from typing import Any
-from uuid import uuid4
 
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import AnyMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from src.models.core import PlanningAgentOutput, PlanStep
 from src.models.enums import ExecutionStatusEnum, ExecutorKey
-from src.models.operation import OperationInterruptPayload, OperationResponse
-from src.models.planner import PlannerGraphState
-from src.presenter import present_review
+from src.models.operation import OperationInterruptPayload
+from src.models.planner import PlannerAgentGraphState, PlannerAgentOutput, PlanStep
+from src.presenter import present_final, present_review
 from src.utils.logging_config import logger
 from src.utils.messages import MsgUtils
 from src.utils.models import PLANNER_MODEL
@@ -36,7 +33,7 @@ from src.utils.PROMPT import PLANNER_SYSTEM_PROMPT
 from src.utils.tools import coerce_operation_resume
 
 
-class PlannerSubgraph:
+class PlannerAgent:
     """Planning subgraph: generate_plan -> plan_review (approve/revise loop)."""
 
     def __init__(self, *, with_checkpointer: bool = False) -> None:
@@ -48,15 +45,22 @@ class PlannerSubgraph:
                                If False (default), parent graph's checkpointer will be used.
 
         """
-        logger.info("PlannerSubgraph initialized with model={}", PLANNER_MODEL)
+        logger.info("PlannerAgent initialized with model={}", PLANNER_MODEL)
 
-        subgraph = StateGraph(PlannerGraphState)
+        subgraph = StateGraph(PlannerAgentGraphState)
         subgraph.add_node("generate_plan", self._generate_plan)
         subgraph.add_node("interrupt_plan_review", self._interrupt_plan_review)
 
         subgraph.add_edge(START, "generate_plan")
         subgraph.add_edge("generate_plan", "interrupt_plan_review")
-        subgraph.add_conditional_edges("interrupt_plan_review", self._route_plan_review, {"revise": "generate_plan", "approved": END})
+        subgraph.add_conditional_edges(
+            "interrupt_plan_review",
+            self._route_plan_review,
+            {
+                "revise": "generate_plan",
+                "approved": END,
+            },
+        )
 
         checkpointer = MemorySaver() if with_checkpointer else None
         self.compiled = subgraph.compile(checkpointer=checkpointer)
@@ -65,127 +69,138 @@ class PlannerSubgraph:
         # structure is inspected.
         self._agent = create_agent(
             model=PLANNER_MODEL,
-            response_format=ToolStrategy[PlanningAgentOutput](PlanningAgentOutput),
+            response_format=ToolStrategy[PlannerAgentOutput](PlannerAgentOutput),
             system_prompt=PLANNER_SYSTEM_PROMPT,
         )
 
-    def _plan(self, *, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], PlanningAgentOutput]:
-        """
-        Generate a plan based on user messages.
+    def _generate_plan(self, state: PlannerAgentGraphState) -> dict[str, Any]:
+        work_messages = MsgUtils.only_human_messages(MsgUtils.ensure_messages(state))  # type: ignore[arg-type]
+        logger.info("PlannerAgent.generate_plan with {} messages", len(work_messages))
 
-        This is a small seam used by the planning node. Tests can monkeypatch this method to make the workflow deterministic without replacing the
-        whole subgraph.
-        """
-        start_time = datetime.now()
-        logger.info("PlannerSubgraph._plan triggered with {} messages", len(user_input))
+        # Step 1. Generate the plan steps call the model
 
-        # NOTE: Placeholder planning logic.
+        # TODO: Call Agent to generate the plan and compose to PlannerAgentOutput class
+
+        # Step 2. Compose the plan steps to PlannerAgentOutput class
+
         plan_steps = [
             PlanStep(
-                id="1",
+                id=uuid.uuid4().hex,
                 title="TLC IPC monitoring (extract compounds + lookup Rf)",
                 executor=ExecutorKey.TLC_AGENT,
                 args={},
-                # TLC execution includes its own form confirmation stage, so avoid double HITL.
-                requires_human_approval=False,
                 status=ExecutionStatusEnum.NOT_STARTED,
                 output=None,
             ),
         ]
-        plan = PlanningAgentOutput(plan_steps=plan_steps, plan_hash="MOCK HASH")
 
-        end_time = datetime.now()
-        return OperationResponse[list[AnyMessage], PlanningAgentOutput](
-            operation_id=f"planner_{uuid4()}",
-            input=user_input,
-            output=plan,
-            start_time=start_time.isoformat(),
-            end_time=end_time.isoformat(),
+        # NOTE: After have the real output,
+
+        plan_out = PlannerAgentOutput(
+            plan_steps=plan_steps,
+            plan_hash=uuid.uuid4().hex,
+            user_approval=False,
         )
 
-    @staticmethod
-    def _ensure_messages(state: PlannerGraphState) -> list[AnyMessage]:
-        return MsgUtils.ensure_messages(state)  # type: ignore[arg-type]
-
-    @staticmethod
-    def _ensure_work_messages(state: PlannerGraphState) -> list[AnyMessage]:
-        # Use the latest human-only messages as execution context.
-        # (For now, revisions are appended by presenter nodes into `messages`.)
-        return MsgUtils.only_human_messages(MsgUtils.ensure_messages(state))  # type: ignore[arg-type]
-
-    def _generate_plan(self, state: PlannerGraphState) -> dict[str, Any]:
-        work_messages = self._ensure_work_messages(state)
-        logger.info("PlannerSubgraph.generate_plan with {} messages", len(work_messages))
-
-        res = self._plan(user_input=work_messages)
-        plan_out = res.output
-
         return {
-            "plan": res,
+            "plan": plan_out,
             "plan_cursor": 0,
-            "plan_approved": False,
             "messages": MsgUtils.append_thinking(
-                MsgUtils.ensure_messages(state),  # type: ignore[arg-type]
+                state.messages,
                 f"[planner] plan_created plan_hash={plan_out.plan_hash} steps={len(plan_out.plan_steps)}",
             ),
         }
 
-    def _interrupt_plan_review(self, state: PlannerGraphState) -> dict[str, Any]:
+    def _interrupt_plan_review(self, state: PlannerAgentGraphState) -> dict[str, Any]:
         """
         Interrupt + apply resume for plan review.
 
         This mirrors the TLCAgent HITL pattern: build the review payload, interrupt, then either approve (END) or append a revision message and
         loop back to `generate_plan`.
         """
-        if state.plan is None:
-            raise ValueError("Missing 'plan' before interrupt_plan_review")
+        plan = state.plan
+        msgs = list(state.messages)
 
-        plan_out = state.plan.output
-        steps_preview = [
-            {
-                "id": s.id,
-                "title": s.title,
-                "executor": str(s.executor),
-                "requires_human_approval": s.requires_human_approval,
-                "status": s.status.value,
-                "args": s.args,
+        if plan is None:
+            # Defensive: if we somehow reached review without a plan, loop back to regenerate.
+            msgs = MsgUtils.append_thinking(list(msgs), "[planner] missing plan at review; regenerating")
+            return {
+                "messages": msgs,
+                "plan": None,
+                "plan_cursor": 0,
             }
-            for s in plan_out.plan_steps
-        ]
-        args = {"plan_hash": plan_out.plan_hash, "plan_steps": steps_preview}
-        payload = OperationInterruptPayload(
-            message=present_review(
-                MsgUtils.only_human_messages(MsgUtils.ensure_messages(state)),  # type: ignore[arg-type]
-                kind="plan_review",
-                args=args,
-            ),
-            args=args,
-        )
+
+        # Generate review message and interrupt payload
+
+        review_msg = present_review(msgs, kind="plan_review", args=plan.model_dump())
+
+        payload = OperationInterruptPayload(message=review_msg, args=plan.model_dump())
 
         raw = interrupt(payload.model_dump(mode="json"))
+
+        # Interrupting ... following are after resume logic.
+
         resume = coerce_operation_resume(raw)
 
-        if resume.approval:
-            return {"plan_approved": True}
-
-        # On reject: append the revision instruction (if provided) and clear old plan so parent graph won't treat it as executable.
-        messages = MsgUtils.ensure_messages(state)  # type: ignore[arg-type]
         edited_text = (resume.comment or "").strip()
         if edited_text:
-            messages = MsgUtils.append_user_message(messages, edited_text)
+            msgs = MsgUtils.append_user_message(msgs, edited_text)
 
-        return {"messages": messages, "plan": None, "plan_cursor": 0, "plan_approved": False}
+        # On approve: return the approved plan.
+
+        resp_msg = present_final(msgs)
+
+        if resume.approval:
+            return {
+                "messages": MsgUtils.append_response(msgs, resp_msg),
+                "plan": plan.model_copy(update={"user_approval": True}),
+            }
+
+        # On reject: append the revision instruction (if provided) and clear old plan so parent graph won't treat it as executable.
+
+        return {"messages": msgs, "plan": None, "plan_cursor": 0}
 
     @staticmethod
-    def _route_plan_review(state: PlannerGraphState) -> str:
-        return "approved" if state.plan_approved else "revise"
+    def _route_plan_review(state: PlannerAgentGraphState) -> str:
+        return "approved" if state.plan and state.plan.user_approval else "revise"
 
 
 if __name__ == "__main__":
     from pathlib import Path
 
-    planner = PlannerSubgraph()
+    from langchain_core.messages import HumanMessage
+    from langchain_core.runnables.config import RunnableConfig
+    from langgraph.types import Command
+
+    from src.models.operation import OperationResumePayload
+    from src.utils.tools import _pretty
+
+    agent = PlannerAgent(with_checkpointer=True)
 
     output_path = Path(__file__).resolve().parents[3] / "assets" / "planner_graph.png"
-    planner.compiled.get_graph(xray=True).draw_mermaid_png(output_file_path=str(output_path))
-    logger.success(f"Workflow exported to {output_path}")
+    agent.compiled.get_graph(xray=True).draw_mermaid_png(output_file_path=str(output_path))
+
+    thread_id = str(uuid.uuid4())
+    config: RunnableConfig = RunnableConfig(configurable={"thread_id": thread_id})
+
+    next_input: PlannerAgentGraphState | Command = PlannerAgentGraphState(
+        messages=[HumanMessage(content="我正在进行水杨酸的乙酰化反应制备乙酰水杨酸帮我进行中控监测IPC")],
+    )
+
+    res = agent.compiled.invoke(
+        next_input,
+        config=config,
+        stream_mode="values",
+    )
+
+    print(_pretty(res))
+
+    next_input = Command(resume=OperationResumePayload(approval=True, comment="", data=None))
+
+    res = agent.compiled.invoke(
+        next_input,
+        config=config,
+        stream_mode="values",
+    )
+
+    print(_pretty(res))

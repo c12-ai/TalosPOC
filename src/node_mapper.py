@@ -9,25 +9,23 @@ import json
 from typing import Any
 
 from langchain_core.messages import SystemMessage
-from langgraph.types import interrupt
 
 from src.agents.coordinators.admittance import WatchDogAgent
 from src.agents.coordinators.intention_detection import IntentionDetectionAgent
-from src.agents.coordinators.planner import PlannerSubgraph
+from src.agents.coordinators.planner import PlannerAgent
 from src.agents.specialists.tlc_agent import TLCAgent
-from src.models.core import AgentState, PlanningAgentOutput, PlanStep
+from src.models.core import AgentState
 from src.models.enums import AdmittanceState, ExecutionStatusEnum, ExecutorKey, TLCPhase
-from src.models.operation import OperationInterruptPayload
+from src.models.planner import PlannerAgentOutput, PlanStep
 from src.models.tlc import TLCExecutionState
 from src.presenter import present_final
 from src.utils.logging_config import logger
 from src.utils.messages import MsgUtils
-from src.utils.tools import coerce_operation_resume
 
 watch_dog = WatchDogAgent()
 intention_detect_agent = IntentionDetectionAgent()
 tlc_agent = TLCAgent()
-planner_agent = PlannerSubgraph()
+planner_agent = PlannerAgent()
 
 
 def presenter_node(state: AgentState) -> dict[str, Any]:
@@ -45,9 +43,8 @@ def presenter_node(state: AgentState) -> dict[str, Any]:
         "bottom_line_feedback": state.bottom_line_feedback,
         "admittance": state.admittance.output.model_dump(mode="json") if state.admittance else None,
         "intention": state.intention.output.model_dump(mode="json") if state.intention else None,
-        "plan": state.plan.output.model_dump(mode="json") if state.plan else None,
+        "plan": state.plan.model_dump(mode="json") if state.plan else None,
         "plan_cursor": int(state.plan_cursor),
-        "plan_approved": bool(state.plan_approved),
         "tlc": state.tlc.model_dump(mode="json"),
     }
 
@@ -61,16 +58,16 @@ def presenter_node(state: AgentState) -> dict[str, Any]:
 # NOTE: Small helpers only. Avoid business logic here.
 
 
-def _get_plan_output(state: AgentState) -> PlanningAgentOutput:
-    """Get `PlanningAgentOutput` from `state.plan` (raises if missing)."""
+def _get_plan_output(state: AgentState) -> PlannerAgentOutput:
+    """Get `PlannerAgentOutput` from `state.plan` (raises if missing)."""
     plan = state.plan
     if plan is None:
         raise ValueError("Missing 'plan' in state")
-    return plan.output
+    return plan
 
 
 def _get_current_step(state: AgentState) -> tuple[int, PlanStep]:
-    """Return `(cursor, current_step)` from `state.plan_cursor` and `state.plan.output.plan_steps`."""
+    """Return `(cursor, current_step)` from `state.plan_cursor` and `state.plan.plan_steps`."""
     cursor = int(state.plan_cursor)
     return cursor, _get_plan_output(state).plan_steps[cursor]
 
@@ -355,39 +352,6 @@ def specialist_dispatcher(state: AgentState) -> dict[str, Any]:
         return updates
 
     step = plan_out.plan_steps[cursor]
-    if step.requires_human_approval:
-        payload = OperationInterruptPayload(
-            message="Approve executing this step? If not, reject; optionally edit input in 'comment'.",
-            args={
-                "step": {
-                    "id": step.id,
-                    "title": step.title,
-                    "executor": str(step.executor),
-                    "args": step.args,
-                    "requires_human_approval": step.requires_human_approval,
-                    "status": step.status.value,
-                },
-            },
-        )
-        raw = interrupt(payload.model_dump(mode="json"))
-        resume = coerce_operation_resume(raw)
-
-        if resume.approval:
-            step.requires_human_approval = False
-            edited_text = (resume.comment or "").strip()
-            if edited_text:
-                step.args["input_text"] = edited_text
-        else:
-            step.status = ExecutionStatusEnum.CANCELLED
-            step.output = {
-                "agent": "human_review",
-                "note": "Step execution rejected by human review.",
-                "executor": str(step.executor),
-                "args": step.args,
-                "comment": resume.comment,
-            }
-            updates["plan"] = state.plan
-            updates["plan_cursor"] = cursor + 1
 
     # copy exist
     if "plan" not in updates:
@@ -399,7 +363,7 @@ def route_next_todo(state: AgentState) -> str:
     """
     Route to the next executor node for the current plan step.
 
-    This router reads `state.plan.output.plan_steps` with `state.plan_cursor` and decides which executor-specific node to enter next. When all
+    This router reads `state.plan.plan_steps` with `state.plan_cursor` and decides which executor-specific node to enter next. When all
     steps are done (cursor out of range), it returns `"done"`. Currently only `ExecutorKey.TLC_AGENT` is supported and maps to
     `"prepare_tlc_step"`.
 

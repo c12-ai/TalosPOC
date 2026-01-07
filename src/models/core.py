@@ -1,10 +1,9 @@
-from typing import Any
-
 from langchain_core.messages import AnyMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-from src.models.enums import AdmittanceState, ExecutionStatusEnum, ExecutorKey, GoalTypeEnum
+from src.models.enums import AdmittanceState, GoalTypeEnum
 from src.models.operation import OperationResponse
+from src.models.planner import PlannerAgentOutput
 from src.models.tlc import TLCExecutionState
 
 
@@ -40,21 +39,6 @@ class UserAdmittance(WatchDogAIDetermined):
     user_input: list[AnyMessage]
 
 
-class PlanStep(BaseModel):
-    id: str
-    title: str
-    executor: ExecutorKey
-    args: dict[str, Any] = Field(default_factory=dict)  # Different for each executor
-    requires_human_approval: bool = True
-    status: ExecutionStatusEnum = ExecutionStatusEnum.NOT_STARTED
-    output: Any | None = None
-
-
-class PlanningAgentOutput(BaseModel):
-    plan_steps: list[PlanStep] = Field(..., description="List of steps to be executed")
-    plan_hash: str = Field(..., description="Hash of the plan")
-
-
 class AgentState(BaseModel):
     """LangGraph state schema (main workflow)."""
 
@@ -86,14 +70,9 @@ class AgentState(BaseModel):
     admittance_state: AdmittanceState | None = None
     intention: OperationResponse[list[AnyMessage], IntentionDetectionFin] | None = None
 
-    # Planner Output
-    plan: OperationResponse[list[AnyMessage], PlanningAgentOutput] | None = None
-
-    # Planner Execution
+    # Planner
+    plan: PlannerAgentOutput | None = None
     plan_cursor: int = 0
-
-    # Plan Approval
-    plan_approved: bool = False
 
     # Executor namespaces
     tlc: TLCExecutionState = Field(default_factory=TLCExecutionState)
