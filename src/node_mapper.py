@@ -13,12 +13,12 @@ from langchain_core.messages import SystemMessage
 from src.agents.coordinators.admittance import WatchDogAgent
 from src.agents.coordinators.intention_detection import IntentionDetectionAgent
 from src.agents.coordinators.planner import PlannerAgent
+from src.agents.specialists.presenter import present_final
 from src.agents.specialists.tlc_agent import TLCAgent
 from src.models.core import AgentState
 from src.models.enums import AdmittanceState, ExecutionStatusEnum, ExecutorKey, TLCPhase
 from src.models.planner import PlannerAgentOutput, PlanStep
 from src.models.tlc import TLCExecutionState
-from src.presenter import present_final
 from src.utils.logging_config import logger
 from src.utils.messages import MsgUtils
 
@@ -184,55 +184,6 @@ def query_handler_node(state: AgentState) -> dict[str, Any]:
     return {"messages": messages}
 
 
-def prepare_tlc_step_node(state: AgentState) -> dict[str, Any]:
-    """Update state value and validate device status."""
-    messages = MsgUtils.append_thinking(MsgUtils.ensure_messages(state), "[prepare_tlc_step] Device status validated")
-
-    return {
-        "tlc": TLCExecutionState(phase=TLCPhase.COLLECTING),
-        "messages": messages,
-    }
-
-
-def finalize_tlc_step_node(state: AgentState) -> dict[str, Any]:
-    """
-    Finalize the current TLC plan step after the TLC subgraph completes.
-
-    This node expects `state.tlc.spec` to have been produced/confirmed by the TLC subgraph. It writes the confirmed spec into the current
-    `PlanStep.output`, marks the step `COMPLETED`, and advances `plan_cursor`. It also sets `tlc_phase=DONE` so upstream nodes can treat the TLC
-    execution as finished for this step.
-
-    Args:
-        state: Current workflow state.
-
-    Returns:
-        A state patch with updated `plan`, `tlc.phase=DONE`, and `plan_cursor` advanced by 1.
-
-    Raises:
-        ValueError: If `state.tlc.spec` is missing after the TLC subgraph completes.
-
-    """
-    cursor, step = _get_current_step(state)
-    approved_spec = state.tlc.spec
-    if approved_spec is None:
-        raise ValueError("Missing 'tlc.spec' after executing TLC subgraph")
-
-    step.output = {
-        "agent": "tlc_agent_subgraph",
-        "executor": str(step.executor),
-        "args": step.args,
-        "spec": approved_spec.model_dump(mode="json"),
-    }
-    step.status = ExecutionStatusEnum.COMPLETED
-
-    logger.info("Finalized TLC step cursor={} id={} executor={}", cursor, step.id, step.executor)
-    return {
-        "plan": state.plan,
-        "tlc": state.tlc.model_copy(update={"phase": TLCPhase.DONE, "spec": approved_spec}),
-        "plan_cursor": cursor + 1,
-    }
-
-
 # endregion
 
 
@@ -315,13 +266,7 @@ def route_stage_handler(state: AgentState) -> str:
 
 def specialist_dispatcher(state: AgentState) -> dict[str, Any]:
     """
-    Normalize the plan cursor and optionally run per-step human approval.
-
-    This node advances the plan cursor past already-finished steps and optionally calls `HumanInLoop.approve_step` when the current step requires
-    approval. It may mutate the current `PlanStep` in-place (status/args/output/flags) and update `plan_cursor` based on the approval outcome. It
-    returns a minimal state patch containing only the fields that changed.
-
-    This node may mutate the current `PlanStep` in-place (approval flags, status, args/output) and advance `plan_cursor` accordingly.
+    Advance the plan cursor to the next step that is not finished and update system status.
 
     Args:
         state: Current workflow state.
@@ -331,49 +276,29 @@ def specialist_dispatcher(state: AgentState) -> dict[str, Any]:
 
     """
     try:
-        plan_out = _get_plan_output(state)
-    except Exception as _:
+        plan = _get_plan_output(state)
+    except ValueError:
         return {}
 
     cursor = int(state.plan_cursor)
 
-    while cursor < len(plan_out.plan_steps):
-        step = plan_out.plan_steps[cursor]
-        if step.status in {ExecutionStatusEnum.COMPLETED, ExecutionStatusEnum.CANCELLED, ExecutionStatusEnum.ON_HOLD}:
+    while cursor < len(plan.plan_steps):
+        step = plan.plan_steps[cursor]
+        # Only skip steps that are truly finished. `ON_HOLD` should not be auto-skipped.
+        if step.status in {ExecutionStatusEnum.COMPLETED, ExecutionStatusEnum.CANCELLED}:
             cursor += 1
             continue
         break
 
-    updates: dict[str, Any] = {}  # contains only what's changed
+    # Return only what actually changed; do not write back `plan` unless mutated.
     if cursor != int(state.plan_cursor):
-        updates["plan_cursor"] = cursor
-
-    if cursor >= len(plan_out.plan_steps):
-        return updates
-
-    step = plan_out.plan_steps[cursor]
-
-    # copy exist
-    if "plan" not in updates:
-        updates["plan"] = state.plan
-    return updates
+        return {"plan_cursor": cursor}
+    return {}
 
 
 def route_next_todo(state: AgentState) -> str:
-    """
-    Route to the next executor node for the current plan step.
+    """Pure router. Route according to plan_cursor."""
 
-    This router reads `state.plan.plan_steps` with `state.plan_cursor` and decides which executor-specific node to enter next. When all
-    steps are done (cursor out of range), it returns `"done"`. Currently only `ExecutorKey.TLC_AGENT` is supported and maps to
-    `"prepare_tlc_step"`.
-
-    Args:
-        state: Current workflow state.
-
-    Returns:
-        `"done"` if cursor is out of range; `"prepare_tlc_step"` for `ExecutorKey.TLC_AGENT`; otherwise `"done"`.
-
-    """
     # Navigate to planner if plan is not generated yet.
     try:
         plan_out = _get_plan_output(state)
@@ -381,17 +306,85 @@ def route_next_todo(state: AgentState) -> str:
         return "planner"
 
     cursor = int(state.plan_cursor)
+
+    # Cursor >= Steps means all done.
     if cursor >= len(plan_out.plan_steps):
         logger.info("All steps executed. cursor={} total={}", cursor, len(plan_out.plan_steps))
         return "done"
 
+    # Subagents
     step = plan_out.plan_steps[cursor]
+
     logger.info("Routing step cursor={} id={} executor={}", cursor, step.id, step.executor)
 
     if step.executor == ExecutorKey.TLC_AGENT:
-        return "prepare_tlc_step"
+        return "tlc_router"
 
     return "done"
+
+
+# endregion
+
+# region <TLC>
+
+
+def tlc_router(state: AgentState) -> dict[str, Any]:
+    """Route to the TLC router."""
+    return {}
+
+
+def route_tlc_next_todo(state: AgentState) -> str:
+    """Route to the TLC next todo."""
+    return "prepare_tlc_step"
+
+
+def prepare_tlc_step_node(state: AgentState) -> dict[str, Any]:
+    """Update state value and validate device status."""
+    messages = MsgUtils.append_thinking(MsgUtils.ensure_messages(state), "[prepare_tlc_step] Device status validated")
+
+    return {
+        "tlc": TLCExecutionState(phase=TLCPhase.COLLECTING),
+        "messages": messages,
+    }
+
+
+def finalize_tlc_step_node(state: AgentState) -> dict[str, Any]:
+    """
+    Finalize the current TLC plan step after the TLC subgraph completes.
+
+    This node expects `state.tlc.spec` to have been produced/confirmed by the TLC subgraph. It writes the confirmed spec into the current
+    `PlanStep.output`, marks the step `COMPLETED`, and advances `plan_cursor`. It also sets `tlc_phase=DONE` so upstream nodes can treat the TLC
+    execution as finished for this step.
+
+    Args:
+        state: Current workflow state.
+
+    Returns:
+        A state patch with updated `plan`, `tlc.phase=DONE`, and `plan_cursor` advanced by 1.
+
+    Raises:
+        ValueError: If `state.tlc.spec` is missing after the TLC subgraph completes.
+
+    """
+    cursor, step = _get_current_step(state)
+    approved_spec = state.tlc.spec
+    if approved_spec is None:
+        raise ValueError("Missing 'tlc.spec' after executing TLC subgraph")
+
+    step.output = {
+        "agent": "tlc_agent_subgraph",
+        "executor": str(step.executor),
+        "args": step.args,
+        "spec": approved_spec.model_dump(mode="json"),
+    }
+    step.status = ExecutionStatusEnum.COMPLETED
+
+    logger.info("Finalized TLC step cursor={} id={} executor={}", cursor, step.id, step.executor)
+    return {
+        "plan": state.plan,
+        "tlc": state.tlc.model_copy(update={"phase": TLCPhase.DONE, "spec": approved_spec}),
+        "plan_cursor": cursor + 1,
+    }
 
 
 # endregion

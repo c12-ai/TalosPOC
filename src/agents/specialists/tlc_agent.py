@@ -19,6 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
+from src.agents.specialists.presenter import present_review
 from src.models.enums import TLCPhase
 from src.models.operation import OperationInterruptPayload, OperationResumePayload
 from src.models.tlc import (
@@ -31,7 +32,6 @@ from src.models.tlc import (
     TLCRatioPayload,
     TLCRatioResult,
 )
-from src.presenter import present_review
 from src.utils.logging_config import logger
 from src.utils.messages import MsgUtils
 from src.utils.models import TLC_MODEL
