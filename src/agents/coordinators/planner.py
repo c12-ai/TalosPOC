@@ -14,7 +14,6 @@ TODO: Clean Code
 from __future__ import annotations
 
 import uuid
-from contextlib import suppress
 from typing import Any
 
 from copilotkit.langgraph import copilotkit_emit_state
@@ -25,7 +24,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from src.agents.specialists.presenter import present_final, present_review
+from src.agents.specialists.presenter import present_review
 from src.models.enums import ExecutionStatusEnum, ExecutorKey
 from src.models.operation import OperationInterruptPayload
 from src.models.planner import PlannerAgentGraphState, PlannerAgentOutput, PlanStep
@@ -74,8 +73,6 @@ class PlannerAgent:
         checkpointer = MemorySaver() if with_checkpointer else None
         self.compiled = subgraph.compile(checkpointer=checkpointer)
 
-        # Keep the LLM agent initialization here (after compile) to match the TLCAgent pattern and avoid unnecessary init cost when only graph
-        # structure is inspected.
         self._agent = create_agent(
             model=PLANNER_MODEL,
             response_format=ToolStrategy[PlannerAgentOutput](PlannerAgentOutput),
@@ -83,25 +80,17 @@ class PlannerAgent:
         )
 
     async def _generate_plan(self, state: PlannerAgentGraphState, config: RunnableConfig) -> dict[str, Any]:
-        # Emit step progress to frontend (best-effort; ignore if no callback context)
-        with suppress(RuntimeError):
-            await copilotkit_emit_state(
-                config,
-                {
-                    "current_step": "generate_plan",
-                    "step_message": PLANNER_STEP_MESSAGES["generate_plan"],
-                },
-            )
+        # Emit step progress to frontend
+        await copilotkit_emit_state(config, {
+            "current_step": "generate_plan",
+            "step_message": PLANNER_STEP_MESSAGES["generate_plan"],
+        })
 
         work_messages = MsgUtils.only_human_messages(MsgUtils.ensure_messages(state))  # type: ignore[arg-type]
 
         logger.info("[Agent][PlannerAgent] PlannerAgent.generate_plan with {} messages", len(work_messages))
 
-        # Step 1. Generate the plan steps call the model
-
-        # TODO: Call Agent to generate the plan and compose to PlannerAgentOutput class
-
-        # Step 2. Compose the plan steps to PlannerAgentOutput class
+        # TODO: Call Agent to generate plan
 
         plan_steps = [
             PlanStep(
@@ -114,8 +103,6 @@ class PlannerAgent:
             ),
         ]
 
-        # NOTE: After have the real output,
-
         plan_out = PlannerAgentOutput(
             plan_steps=plan_steps,
             plan_hash=uuid.uuid4().hex,
@@ -125,8 +112,8 @@ class PlannerAgent:
         return {
             "plan": plan_out,
             "plan_cursor": 0,
-            "messages": MsgUtils.append_thinking(
-                state.messages,
+            "thinking": MsgUtils.append_thinking(
+                MsgUtils.ensure_thinking(state),
                 f"[planner] plan_created plan_hash={plan_out.plan_hash} steps={len(plan_out.plan_steps)}",
             ),
             "current_step": None,
@@ -134,51 +121,35 @@ class PlannerAgent:
         }
 
     async def _interrupt_plan_review(self, state: PlannerAgentGraphState, config: RunnableConfig) -> dict[str, Any]:
-        """
-        Interrupt + apply resume for plan review.
-
-        This mirrors the TLCAgent HITL pattern: build the review payload, interrupt, then either approve (END) or append a revision message and
-        loop back to `generate_plan`.
-        """
-        # Emit step progress to frontend (best-effort; ignore if no callback context)
-        with suppress(RuntimeError):
-            await copilotkit_emit_state(
-                config,
-                {
-                    "current_step": "plan_review",
-                    "step_message": PLANNER_STEP_MESSAGES["plan_review"],
-                },
-            )
+        """Interrupt + apply resume for plan review."""
+        # Emit step progress to frontend
+        await copilotkit_emit_state(config, {
+            "current_step": "plan_review",
+            "step_message": PLANNER_STEP_MESSAGES["plan_review"],
+        })
 
         plan = state.plan
-
         msgs = list(state.messages)
 
         base_result = {"current_step": None, "step_message": None}
 
         if plan is None:
-            # Defensive: if we somehow reached review without a plan, loop back to regenerate.
-            msgs = MsgUtils.append_thinking(list(msgs), "[planner] missing plan at review; regenerating")
+            thinking = MsgUtils.append_thinking(MsgUtils.ensure_thinking(state), "[planner] missing plan at review; regenerating")
             return {
-                "messages": msgs,
+                "thinking": thinking,
                 "plan": None,
                 "plan_cursor": 0,
                 **base_result,
             }
 
-        # Generate review message and interrupt payload
-
-        review_msg = await present_review(msgs, kind="plan_review", args=plan.model_dump())
-
+        review_msg = present_review(msgs, kind="plan_review", args=plan.model_dump(), config=config)
         payload = OperationInterruptPayload(message=review_msg, args=plan.model_dump())
 
-        logger.critical(f"[Agent][PlannerAgent] PlannerAgent._interrupt_plan_review reached, payload={payload}")
+        logger.info(f"[Agent][PlannerAgent] PlannerAgent._interrupt_plan_review reached, payload={payload}")
 
         raw = interrupt(payload.model_dump(mode="json"))
 
-        logger.critical(f"[Agent][PlannerAgent] PlannerAgent._interrupt_plan_review reached, raw={raw}")
-
-        # Interrupting ... following are after resume logic.
+        logger.info(f"[Agent][PlannerAgent] PlannerAgent._interrupt_plan_review reached, raw={raw}")
 
         resume = coerce_operation_resume(raw)
 
@@ -186,18 +157,12 @@ class PlannerAgent:
         if edited_text:
             msgs = MsgUtils.append_user_message(msgs, edited_text)
 
-        # On approve: return the approved plan.
-
-        resp_msg = await present_final(msgs)
-
         if resume.approval:
             return {
-                "messages": MsgUtils.append_response(msgs, resp_msg),
+                "messages": msgs,
                 "plan": plan.model_copy(update={"user_approval": True}),
                 **base_result,
             }
-
-        # On reject: append the revision instruction (if provided) and clear old plan so parent graph won't treat it as executable.
 
         return {"messages": msgs, "plan": None, "plan_cursor": 0, **base_result}
 
