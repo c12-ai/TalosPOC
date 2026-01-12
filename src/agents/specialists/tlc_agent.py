@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import time
 import uuid
-from contextlib import suppress
 from typing import Any
 
 import httpx
 from copilotkit.langgraph import copilotkit_emit_state
 from langchain.agents import create_agent
-from langchain.agents.structured_output import ProviderStrategy
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -127,10 +126,11 @@ class TLCAgent:
         checkpointer = MemorySaver() if with_checkpointer else None
 
         self.compiled = subgraph.compile(checkpointer=checkpointer)
+
         self._agent = create_agent(
             model=TLC_MODEL,
             system_prompt=TLC_AGENT_PROMPT,
-            response_format=ProviderStrategy(TLCAIOutput),
+            response_format=ToolStrategy[TLCAIOutput](TLCAIOutput),
         )
 
     async def _extract_compound_and_fill_spec(self, state: TLCAgentGraphState, config: RunnableConfig) -> dict[str, Any]:
@@ -138,73 +138,57 @@ class TLCAgent:
         Extract compound info from messages and build tlc.spec.
 
         """
-        # Emit step progress to frontend (best-effort; ignore if no callback context)
-        with suppress(RuntimeError):
-            await copilotkit_emit_state(
-                config,
-                {
-                    "current_step": "extract_compound_and_fill_spec",
-                    "step_message": TLC_STEP_MESSAGES["extract_compound_and_fill_spec"],
-                },
-            )
+        # Emit step progress to frontend
+        await copilotkit_emit_state(config, {
+            "current_step": "extract_compound_and_fill_spec",
+            "step_message": TLC_STEP_MESSAGES["extract_compound_and_fill_spec"],
+        })
 
-        # Step 1. Invoke
         result = self._agent.invoke({"messages": [*state.messages]})
         model_resp: TLCAIOutput = result["structured_response"]
 
-        # Step 2. Build TLCAgentOutput
         updated_agent_output: TLCAgentOutput = TLCAgentOutput(
             compounds=model_resp.compounds,
             exp_params=[],
             confirmed=False,
         )
 
-        messages = MsgUtils.append_thinking(state.messages, str(updated_agent_output))
+        thinking = MsgUtils.append_thinking(MsgUtils.ensure_thinking(state), str(updated_agent_output))
 
         return {
             "tlc": state.tlc.model_copy(update={"spec": updated_agent_output, "phase": TLCPhase.COLLECTING}),
-            "messages": messages,
+            "thinking": thinking,
             "current_step": None,
             "step_message": None,
         }
 
     async def _interrupt_user_confirm(self, state: TLCAgentGraphState, config: RunnableConfig) -> dict[str, Any]:
         """Interrupt + apply resume for `tlc.spec` confirm/revise."""
-        # Emit step progress to frontend (best-effort; ignore if no callback context)
-        with suppress(RuntimeError):
-            await copilotkit_emit_state(
-                config,
-                {
-                    "current_step": "user_confirm",
-                    "step_message": TLC_STEP_MESSAGES["user_confirm"],
-                },
-            )
+        # Emit step progress to frontend
+        await copilotkit_emit_state(config, {
+            "current_step": "user_confirm",
+            "step_message": TLC_STEP_MESSAGES["user_confirm"],
+        })
 
         if not state.tlc.spec:
             raise ValueError("No SPEC yet")
 
         messages = state.messages
 
-        # Step 0. Summarize and build interrupt payload
-        review_msg = await present_review(messages, kind="tlc_confirm", args=state.tlc.spec.model_dump())
+        review_msg = present_review(messages, kind="tlc_confirm", args=state.tlc.spec.model_dump(), config=config)
 
         interrupt_payload: OperationInterruptPayload = OperationInterruptPayload(
             message=review_msg,
             args={"tlc": {"spec": state.tlc.spec.model_dump(mode="json")}},
         )
 
-        # Step 1. Throw Interrupt
         raw = interrupt(interrupt_payload.model_dump(mode="json"))
-
-        # Step 2. Coerce operation resume
         resume: OperationResumePayload = coerce_operation_resume(raw)
 
-        # Append user message
         edited_text = (resume.comment or "").strip()
         if edited_text and not resume.approval:
             messages = MsgUtils.append_user_message(messages, edited_text)
 
-        # Step 3. Build updates
         updates: dict[str, Any] = {
             "user_approved": bool(resume.approval),
             "messages": messages,
@@ -212,7 +196,6 @@ class TLCAgent:
             "step_message": None,
         }
 
-        # Spec Update
         if resume.approval:
             if not isinstance(state.tlc.spec, TLCAgentOutput):
                 raise TypeError("Missing `tlc.spec` before applying approval")
@@ -226,15 +209,11 @@ class TLCAgent:
         return updates
 
     async def _fill_recommended_ratio(self, state: TLCAgentGraphState, config: RunnableConfig) -> dict[str, Any]:
-        # Emit step progress to frontend (best-effort; ignore if no callback context)
-        with suppress(RuntimeError):
-            await copilotkit_emit_state(
-                config,
-                {
-                    "current_step": "fill_recommended_ratio",
-                    "step_message": TLC_STEP_MESSAGES["fill_recommended_ratio"],
-                },
-            )
+        # Emit step progress to frontend
+        await copilotkit_emit_state(config, {
+            "current_step": "fill_recommended_ratio",
+            "step_message": TLC_STEP_MESSAGES["fill_recommended_ratio"],
+        })
 
         if not isinstance(state.tlc.spec, TLCAgentOutput) or not state.tlc.spec.compounds:
             raise TypeError("Missing `tlc.spec`/`compounds` before fill_recommended_ratio")
@@ -257,14 +236,14 @@ class TLCAgent:
             for c, r in zip(compounds, ratios, strict=True)
         ]
 
-        messages = MsgUtils.append_thinking(
-            MsgUtils.ensure_messages({"messages": state.messages}),
+        thinking = MsgUtils.append_thinking(
+            MsgUtils.ensure_thinking(state),
             f"[tlc] fill_ratio done. compounds={len(compounds)}",
         )
         updated = state.tlc.spec.model_copy(update={"spec": spec, "confirmed": True})
         return {
             "tlc": state.tlc.model_copy(update={"spec": updated, "phase": TLCPhase.CONFIRMED}),
-            "messages": messages,
+            "thinking": thinking,
             "current_step": None,
             "step_message": None,
         }
@@ -291,8 +270,6 @@ class TLCAgent:
             return None
 
 
-# tlc_agent_subgraph = TLCAgent()
-# Avoid import side effects and duplicate initialization, instantiate it in node_mapper.py
 
 if __name__ == "__main__":
     from pathlib import Path
