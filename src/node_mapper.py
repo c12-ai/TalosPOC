@@ -46,7 +46,7 @@ def _get_current_step(state: AgentState) -> tuple[int, PlanStep]:
     return cursor, _get_plan_output(state).plan_steps[cursor]
 
 
-def presenter_node(state: AgentState) -> dict[str, Any]:
+async def presenter_node(state: AgentState) -> dict[str, Any]:
     """
     Final presenter node (single exit): compose and sanitize user-visible messages.
 
@@ -68,7 +68,7 @@ def presenter_node(state: AgentState) -> dict[str, Any]:
 
     ctx_msg = SystemMessage(content=f"CONTEXT_JSON:\n{json.dumps(context, ensure_ascii=False)}")
 
-    final_text = present_final([ctx_msg, *MsgUtils.only_human_messages(messages)])
+    final_text = await present_final([ctx_msg, *MsgUtils.only_human_messages(messages)])
     return {"messages": MsgUtils.append_response(messages, final_text)}
 
 
@@ -78,7 +78,7 @@ def presenter_node(state: AgentState) -> dict[str, Any]:
 # region <function node and agent wrapper>
 
 
-def user_admittance_node(state: AgentState) -> dict[str, Any]:
+async def user_admittance_node(state: AgentState) -> dict[str, Any]:
     """
     Run the domain/capacity gate and write the result into state.
 
@@ -94,10 +94,10 @@ def user_admittance_node(state: AgentState) -> dict[str, Any]:
 
     """
     messages = MsgUtils.ensure_messages(state)
-    res = watch_dog.run(user_input=messages)
+    res = await watch_dog.run(user_input=messages)
 
     logger.debug(
-        "Admittance decision: within_domain={}, within_capacity={}",
+        "[LG][Admittance Node] Admittance decision: within_domain={}, within_capacity={}",
         res.output.within_domain,
         res.output.within_capacity,
     )
@@ -108,7 +108,7 @@ def user_admittance_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-def intention_detection_node(state: AgentState) -> dict[str, Any]:
+async def intention_detection_node(state: AgentState) -> dict[str, Any]:
     """
     Run intention detection and store the result in state.
 
@@ -123,8 +123,15 @@ def intention_detection_node(state: AgentState) -> dict[str, Any]:
 
     """
     messages = MsgUtils.ensure_messages(state)
-    logger.info("Running intention_detection_node with {} messages", len(messages))
-    res = intention_detect_agent.run(user_input=messages)
+    res = await intention_detect_agent.run(user_input=messages)
+
+    logger.debug(
+        "[LG][Intention Detection Node] Intention detection decision: winner_id={}, matched_goal_type={}, reason={}",
+        res.output.winner_id,
+        res.output.matched_goal_type,
+        res.output.reason,
+    )
+
     return {"intention": res}
 
 
@@ -142,6 +149,8 @@ def bottom_line_handler_node(state: AgentState) -> dict[str, Any]:
         A state patch with updated `messages` and `bottom_line_feedback`.
 
     """
+    logger.debug("[LG][Bottom Line Handler Node] Bottom line handler node triggered")
+
     feedback = "当前请求超出系统领域/能力范围, 无法执行。请提供与小分子合成或 DMPK 实验相关的需求。"
 
     messages = MsgUtils.append_thinking(MsgUtils.ensure_messages(state), f"[bottom_line_handler] rejected\n{feedback}")
@@ -162,6 +171,8 @@ def consulting_handler_node(state: AgentState) -> dict[str, Any]:
         A state patch with updated `messages`/`user_input`.
 
     """
+    logger.debug("[LG][Consulting Handler Node] Consulting handler node triggered")
+
     messages = MsgUtils.append_thinking(MsgUtils.ensure_messages(state), "[consulting] TODO: implement consulting response")
     return {"messages": messages}
 
@@ -180,6 +191,8 @@ def query_handler_node(state: AgentState) -> dict[str, Any]:
         A state patch with updated `messages`/`user_input`.
 
     """
+    logger.debug("[LG][Query Handler Node] Query handler node triggered")
+
     messages = MsgUtils.append_thinking(MsgUtils.ensure_messages(state), "[query] TODO: implement query response")
     return {"messages": messages}
 
@@ -219,19 +232,24 @@ def stage_dispatcher(state: AgentState) -> dict[str, Any]:
     adm = state.admittance.output if state.admittance is not None else None
     itn = state.intention.output
 
-    messages = MsgUtils.append_thinking(
-        messages,
-        "\n".join(
-            [
-                "[stage_dispatcher] join results",
-                f"admittance_state={state.admittance_state}",
-                f"within_domain={getattr(adm, 'within_domain', None)}, within_capacity={getattr(adm, 'within_capacity', None)}",
-                f"winner_id={itn.winner_id}",
-                f"matched_goal_type={itn.matched_goal_type}",
-                f"reason={itn.reason}",
-            ],
+    resp_msg = str(
+        (
+            "\n".join(
+                [
+                    "[stage_dispatcher] join results",
+                    f"admittance_state={state.admittance_state}",
+                    f"within_domain={getattr(adm, 'within_domain', None)}, within_capacity={getattr(adm, 'within_capacity', None)}",
+                    f"winner_id={itn.winner_id}",
+                    f"matched_goal_type={itn.matched_goal_type}",
+                    f"reason={itn.reason}",
+                ],
+            ),
         ),
     )
+
+    messages = MsgUtils.append_thinking(messages, resp_msg)
+
+    logger.debug("[LG][Stage Dispatcher Node] Stage dispatcher node triggered: {}", resp_msg)
 
     if state.admittance_state == AdmittanceState.NO:
         return {"mode": "rejected", "messages": messages}
@@ -331,6 +349,7 @@ def route_next_todo(state: AgentState) -> str:
 
 def tlc_router(state: AgentState) -> dict[str, Any]:
     """Route to the TLC router."""
+    _ = state
     return {}
 
 

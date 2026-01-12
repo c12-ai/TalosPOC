@@ -15,7 +15,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.2.1",
     "langchain[openai]>=1.0.8",
     "langgraph>=1.0.3",
-    "langgraph-api>=0.5.26",
+    "langgraph-api==0.6.22",
     "langgraph-sdk>=0.2.9",
     "langsmith>=0.4.46",
     "loguru>=0.7.3",

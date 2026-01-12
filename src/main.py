@@ -3,7 +3,6 @@ from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
 
 from src import node_mapper
 from src.models.core import AgentState
@@ -108,42 +107,61 @@ talos_agent = create_talos_agent()
 
 if __name__ == "__main__":
     import argparse
+    import asyncio
+    import os
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--test", action="store_true", help="Test the workflow")
     parser.add_argument("--export", action="store_true", help="Export the workflow to a PNG file")
+    parser.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help="Auto-approve HITL interrupts during --test (non-interactive). You can also set TALOS_AUTO_APPROVE=1.",
+    )
     args = parser.parse_args()
 
     if args.test:
         from langchain_core.messages import HumanMessage
+        from langgraph.types import Command
 
+        from src.models.operation import OperationResumePayload
         from src.utils.tools import _pretty, terminal_approval_handler
 
         config = {"configurable": {"thread_id": "test"}}
         agent = create_talos_agent(checkpointer=MemorySaver())
 
-        next_input = AgentState(
-            messages=[HumanMessage(content="我正在进行水杨酸的乙酰化反应制备乙酰水杨酸帮我进行中控监测IPC")],
-        )
+        auto_approve = bool(args.auto_approve) or os.getenv("TALOS_AUTO_APPROVE", "").strip() in {"1", "true", "yes", "y"}
 
-        while True:
-            interrupt = False
-            for state in agent.stream(next_input, config=config, stream_mode="values"):
-                if "__interrupt__" in state:
-                    interrupt = True
-                    for itp in state["__interrupt__"]:
-                        print("------------HITL----------------")
-                        print(_pretty(itp.value))
-                        print("--------------------------------")
-                    next_input = terminal_approval_handler(state)
+        async def _run_test() -> None:
+            next_input: AgentState | Command = AgentState(
+                messages=[HumanMessage(content="我正在进行水杨酸的乙酰化反应制备乙酰水杨酸帮我进行中控监测IPC")],
+            )
+
+            while True:
+                interrupted = False
+                async for state in agent.astream(next_input, config=config, stream_mode="values"):
+                    if "__interrupt__" in state:
+                        interrupted = True
+                        for itp in state["__interrupt__"]:
+                            print("------------HITL----------------")
+                            print(_pretty(itp.value))
+                            print("--------------------------------")
+
+                        next_input = (
+                            Command(resume=OperationResumePayload(approval=True, comment=None, data={}).model_dump())
+                            if auto_approve
+                            else terminal_approval_handler(state)
+                        )
+                        break
+
+                    for msg in state["messages"]:
+                        print(msg + "\n")
+                    print("--------------------------------")
+
+                if not interrupted:
                     break
 
-                for msg in state["messages"]:
-                    print(msg + "\n")
-                print("--------------------------------")
-
-            if not interrupt:
-                break
+        asyncio.run(_run_test())
 
     if args.export:
         from src.utils.logging_config import logger

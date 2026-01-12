@@ -45,7 +45,7 @@ class PlannerAgent:
                                If False (default), parent graph's checkpointer will be used.
 
         """
-        logger.info("PlannerAgent initialized with model={}", PLANNER_MODEL)
+        logger.info("[Agent][PlannerAgent] PlannerAgent initialized with model={}", PLANNER_MODEL)
 
         subgraph = StateGraph(PlannerAgentGraphState)
         subgraph.add_node("generate_plan", self._generate_plan)
@@ -75,7 +75,8 @@ class PlannerAgent:
 
     def _generate_plan(self, state: PlannerAgentGraphState) -> dict[str, Any]:
         work_messages = MsgUtils.only_human_messages(MsgUtils.ensure_messages(state))  # type: ignore[arg-type]
-        logger.info("PlannerAgent.generate_plan with {} messages", len(work_messages))
+
+        logger.info("[Agent][PlannerAgent] PlannerAgent.generate_plan with {} messages", len(work_messages))
 
         # Step 1. Generate the plan steps call the model
 
@@ -111,14 +112,16 @@ class PlannerAgent:
             ),
         }
 
-    def _interrupt_plan_review(self, state: PlannerAgentGraphState) -> dict[str, Any]:
+    async def _interrupt_plan_review(self, state: PlannerAgentGraphState) -> dict[str, Any]:
         """
         Interrupt + apply resume for plan review.
 
         This mirrors the TLCAgent HITL pattern: build the review payload, interrupt, then either approve (END) or append a revision message and
         loop back to `generate_plan`.
         """
+
         plan = state.plan
+
         msgs = list(state.messages)
 
         if plan is None:
@@ -132,11 +135,15 @@ class PlannerAgent:
 
         # Generate review message and interrupt payload
 
-        review_msg = present_review(msgs, kind="plan_review", args=plan.model_dump())
+        review_msg = await present_review(msgs, kind="plan_review", args=plan.model_dump())
 
         payload = OperationInterruptPayload(message=review_msg, args=plan.model_dump())
 
+        logger.critical(f"[Agent][PlannerAgent] PlannerAgent._interrupt_plan_review reached, payload={payload}")
+
         raw = interrupt(payload.model_dump(mode="json"))
+
+        logger.critical(f"[Agent][PlannerAgent] PlannerAgent._interrupt_plan_review reached, raw={raw}")
 
         # Interrupting ... following are after resume logic.
 
@@ -148,7 +155,7 @@ class PlannerAgent:
 
         # On approve: return the approved plan.
 
-        resp_msg = present_final(msgs)
+        resp_msg = await present_final(msgs)
 
         if resume.approval:
             return {

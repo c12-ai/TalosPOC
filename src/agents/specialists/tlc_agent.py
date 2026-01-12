@@ -148,7 +148,7 @@ class TLCAgent:
         }
 
     @staticmethod
-    def _interrupt_user_confirm(state: TLCAgentGraphState) -> dict[str, Any]:
+    async def _interrupt_user_confirm(state: TLCAgentGraphState) -> dict[str, Any]:
         """Interrupt + apply resume for `tlc.spec` confirm/revise."""
         if not state.tlc.spec:
             raise ValueError("No SPEC yet")
@@ -156,7 +156,7 @@ class TLCAgent:
         messages = state.messages
 
         # Step 0. Summarize and build interrupt payload
-        review_msg = present_review(messages, kind="tlc_confirm", args=state.tlc.spec.model_dump())
+        review_msg = await present_review(messages, kind="tlc_confirm", args=state.tlc.spec.model_dump())
 
         interrupt_payload: OperationInterruptPayload = OperationInterruptPayload(
             message=review_msg,
