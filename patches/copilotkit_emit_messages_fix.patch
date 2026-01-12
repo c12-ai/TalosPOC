@@ -1,0 +1,32 @@
+--- a/langgraph_agui_agent.py
++++ b/langgraph_agui_agent.py
+@@ -150,13 +150,22 @@ class LangGraphAGUIAgent(LangGraphAgent):
+                 EventType.TOOL_CALL_END
+             ]
+
+-            metadata = getattr(raw_event, 'metadata', {}) or {}
++            # FIX: raw_event can be a dict or an object, handle both cases
++            # See: https://github.com/CopilotKit/CopilotKit/issues/2066
++            metadata = (raw_event.get('metadata', {}) if isinstance(raw_event, dict)
++                        else getattr(raw_event, 'metadata', {})) or {}
+
+             if "copilotkit:emit-tool-calls" in metadata:
+                 if metadata["copilotkit:emit-tool-calls"] is False and is_tool_event:
+-                    return ""  # Don't dispatch this event
+-
++                    return None  # Don't dispatch this event
++
+             if "copilotkit:emit-messages" in metadata:
+                 if metadata["copilotkit:emit-messages"] is False and is_message_event:
+-                    return ""  # Don't dispatch this event
++                    return None  # Don't dispatch this event
+
+         return super()._dispatch_event(event)
++
++    async def run(self, input):
++        """Override run to filter out None events from _dispatch_event filtering."""
++        async for event in super().run(input):
++            if event is not None:
++                yield event
+
+     async def _handle_single_event(self, event: Any, state: State) -> AsyncGenerator[str, None]:
