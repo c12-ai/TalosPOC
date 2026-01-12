@@ -1,4 +1,4 @@
-.PHONY: all format lint test tests test_watch integration_tests docker_tests help extended_tests
+.PHONY: all format lint test tests test_watch integration_tests docker_tests help extended_tests install sync
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -53,11 +53,23 @@ spell_fix:
 	codespell --toml pyproject.toml -w
 
 ######################
+# INSTALL
+######################
+
+sync:
+	uv sync
+
+install: sync
+	uv run patches/apply_patches.py
+
+######################
 # HELP
 ######################
 
 help:
 	@echo '----'
+	@echo 'install                      - sync dependencies and apply patches'
+	@echo 'sync                         - sync dependencies only (uv sync)'
 	@echo 'format                       - run code formatters'
 	@echo 'lint                         - run linters'
 	@echo 'test                         - run unit tests'

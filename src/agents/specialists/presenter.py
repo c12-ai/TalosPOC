@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+from copilotkit.langgraph import copilotkit_customize_config
 from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.runnables.config import RunnableConfig
 
 from src.utils.models import PLANNER_MODEL
 
@@ -19,7 +21,7 @@ ReviewKind = Literal["plan_review", "tlc_confirm"]
 
 
 FINAL_SYSTEM_PROMPT = """
-你是 Talos (实验室智能助手) 的 Presenter, 总结最近一步的操作, 并简短的描述给用户50字以内的答复。
+你是 Talos (实验室智能助手) 的 Presenter，总结最近一步的操作，并简短的描述给用户50字以内的答复。
 
 要求:
 - 你只输出给用户看的最终答复, 不要输出内部日志、工具调用细节、调试信息。
@@ -40,19 +42,55 @@ REVIEW_SYSTEM_PROMPT = """
 """.strip()
 
 
-async def _ainvoke(messages: list[AnyMessage], *, system_prompt: str) -> str:
-    resp = await PLANNER_MODEL.ainvoke([SystemMessage(content=system_prompt), *messages])
+def _invoke(
+    messages: list[AnyMessage],
+    *,
+    system_prompt: str,
+    config: RunnableConfig | None = None,
+) -> str:
+    resp = PLANNER_MODEL.invoke(
+        [SystemMessage(content=system_prompt), *messages],
+        config=config,
+    )
     content = getattr(resp, "content", "")
     return str(content or "").strip()
 
 
-async def present_final(messages: list[AnyMessage]) -> str:
+def present_final(
+    messages: list[AnyMessage], config: RunnableConfig | None = None
+) -> str:
     """Generate the final user-visible answer from messages."""
-    return await _ainvoke(messages, system_prompt=FINAL_SYSTEM_PROMPT) or "已完成。"
+    invoke_config = (
+        copilotkit_customize_config(config, emit_messages=True)
+        if config
+        else copilotkit_customize_config(emit_messages=True)
+    )
+    return (
+        _invoke(messages, system_prompt=FINAL_SYSTEM_PROMPT, config=invoke_config)
+        or "已完成。"
+    )
 
 
-async def present_review(messages: list[AnyMessage], *, kind: ReviewKind, args: dict[str, Any]) -> str:
-    """Generate the user-visible review prompt shown before interrupt."""
+def present_review(
+    messages: list[AnyMessage],
+    *,
+    kind: ReviewKind,
+    args: dict[str, Any],
+    config: RunnableConfig | None = None,
+) -> str:
+    """Generate review prompt shown before interrupt."""
+    invoke_config = (
+        copilotkit_customize_config(config, emit_messages=False)
+        if config
+        else copilotkit_customize_config(emit_messages=False)
+    )
     review_json = json.dumps({"kind": kind, "args": args}, ensure_ascii=False)
     review_msg = SystemMessage(content=f"REVIEW_JSON:\n{review_json}")
-    return await _ainvoke([review_msg, *messages], system_prompt=REVIEW_SYSTEM_PROMPT) or "请确认是否继续。"
+    return (
+        _invoke(
+            [review_msg, *messages],
+            system_prompt=REVIEW_SYSTEM_PROMPT,
+            config=invoke_config,
+        )
+        or "请确认是否继续。"
+    )
