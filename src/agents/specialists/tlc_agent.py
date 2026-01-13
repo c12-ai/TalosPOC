@@ -21,7 +21,6 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from src.agents.specialists.presenter import present_review
 from src.models.enums import TLCPhase
 from src.models.operation import OperationInterruptPayload, OperationResumePayload
 from src.models.tlc import (
@@ -149,6 +148,9 @@ class TLCAgent:
             )
 
         # Step 1. Invoke
+
+        logger.info("[Agent][TLC][Extract Compound and Fill Spec] Extract compound and fill spec triggered...")
+
         result = self._agent.invoke({"messages": [*state.messages]})
         model_resp: TLCAIOutput = result["structured_response"]
 
@@ -186,12 +188,15 @@ class TLCAgent:
         messages = state.messages
 
         # Step 0. Summarize and build interrupt payload
-        review_msg = await present_review(messages, kind="tlc_confirm", args=state.tlc.spec.model_dump())
+        # review_msg = await present_review(messages, kind="tlc_confirm", args=state.tlc.spec.model_dump()) # NOTE: Can be upgrade to LLM invoke response.
+        review_msg = "[PRSNT] Please confirm following TLC spec"
 
         interrupt_payload: OperationInterruptPayload = OperationInterruptPayload(
             message=review_msg,
             args={"tlc": {"spec": state.tlc.spec.model_dump(mode="json")}},
         )
+
+        logger.info(f"[Agent][TLC][Interrupt User Confirm] Interrupt user confirm triggered...\n{interrupt_payload.model_dump(mode='json')}")
 
         # Step 1. Throw Interrupt
         raw = interrupt(interrupt_payload.model_dump(mode="json"))
@@ -295,6 +300,7 @@ class TLCAgent:
 # Avoid import side effects and duplicate initialization, instantiate it in node_mapper.py
 
 if __name__ == "__main__":
+    import asyncio
     from pathlib import Path
 
     from src.utils.logging_config import logger
@@ -311,22 +317,23 @@ if __name__ == "__main__":
 
     text = input("[user]: ").strip() or "我正在进行水杨酸的乙酰化反应制备乙酰水杨酸帮我进行中控监测IPC"
     next_input: TLCAgentGraphState | Command = TLCAgentGraphState(messages=[HumanMessage(content=text)], tlc=TLCExecutionState(spec=None))
-    res: dict[str, Any] = {}
 
-    while True:
-        interrupted = False
-        for state in agent.compiled.stream(next_input, config=config, stream_mode="values"):
-            if "__interrupt__" in state:
-                interrupted = True
-                next_input = terminal_approval_handler(state)
+    async def _run(next_input: TLCAgentGraphState | Command) -> None:
+        while True:
+            interrupted = False
+            async for state in agent.compiled.astream(next_input, config=config, stream_mode="values"):
+                if "__interrupt__" in state:
+                    interrupted = True
+                    next_input = terminal_approval_handler(state)
+                    break
+
+                # 正常输出
+                for msg in state["messages"]:
+                    print(msg + "\n")
+                print("--------------------------------")
+
+            if not interrupted:
+                print("graph reached END")
                 break
 
-            # 正常输出
-            for msg in state["messages"]:
-                print(msg + "\n")
-
-            print("--------------------------------")
-
-        if not interrupted:
-            print("graph reached END")
-            break
+    asyncio.run(_run(next_input))

@@ -93,9 +93,7 @@ class PlannerAgent:
                 },
             )
 
-        work_messages = MsgUtils.only_human_messages(MsgUtils.ensure_messages(state))  # type: ignore[arg-type]
-
-        logger.info("[Agent][PlannerAgent] PlannerAgent.generate_plan with {} messages", len(work_messages))
+        logger.info("[Agent][PlannerAgent] PlannerAgent.generate_plan with messages")
 
         # Step 1. Generate the plan steps call the model
 
@@ -114,7 +112,7 @@ class PlannerAgent:
             ),
         ]
 
-        # NOTE: After have the real output,
+        # NOTE: After have the real steps,
 
         plan_out = PlannerAgentOutput(
             plan_steps=plan_steps,
@@ -125,10 +123,10 @@ class PlannerAgent:
         return {
             "plan": plan_out,
             "plan_cursor": 0,
-            "messages": MsgUtils.append_thinking(
-                state.messages,
-                f"[planner] plan_created plan_hash={plan_out.plan_hash} steps={len(plan_out.plan_steps)}",
-            ),
+            # "messages": MsgUtils.append_thinking(
+            #     state.messages,
+            #     f"[planner] plan_created plan_hash={plan_out.plan_hash} steps={len(plan_out.plan_steps)}",
+            # ),
             "current_step": None,
             "step_message": None,
         }
@@ -168,7 +166,9 @@ class PlannerAgent:
 
         # Generate review message and interrupt payload
 
-        review_msg = await present_review(msgs, kind="plan_review", args=plan.model_dump())
+        # review_msg = await present_review(msgs, kind="plan_review", args=plan.model_dump()) # NOTE: Not used for now
+
+        review_msg = "[PRSNT] Please confirm following plan"
 
         payload = OperationInterruptPayload(message=review_msg, args=plan.model_dump())
 
@@ -188,7 +188,9 @@ class PlannerAgent:
 
         # On approve: return the approved plan.
 
-        resp_msg = await present_final(msgs)
+        # resp_msg = await present_final(msgs)
+
+        resp_msg = "[PLANNER][PRSNT] Plan approved, will start executing"
 
         if resume.approval:
             return {

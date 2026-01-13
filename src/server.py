@@ -12,7 +12,15 @@ talos_agent = create_talos_agent(checkpointer=MemorySaver())
 
 app = FastAPI()
 
-add_langgraph_fastapi_endpoint(app, LangGraphAGUIAgent(name="Talos-POC", graph=talos_agent), "/agent")
+add_langgraph_fastapi_endpoint(
+    app=app,
+    agent=LangGraphAGUIAgent(
+        name="Talos-POC",
+        graph=talos_agent,
+        description="Talos Lab Assistant for Pharmaceutical Science",
+    ),
+    path="/agent",
+)
 
 
 @app.get("/health")

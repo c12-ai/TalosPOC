@@ -9,7 +9,7 @@ import json
 from contextlib import suppress
 from typing import Any
 
-from copilotkit.langgraph import copilotkit_emit_state
+from copilotkit.langgraph import copilotkit_customize_config, copilotkit_emit_state
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables.config import RunnableConfig
 
@@ -66,6 +66,9 @@ async def presenter_node(state: AgentState) -> dict[str, Any]:
     `messages`. It rebuilds `messages` to contain only human inputs + the final
     assistant reply, preventing intermediate drafts/logs from leaking.
     """
+
+    logger.info("[LG][Presenter Node] Presenter node triggered...")
+
     messages = MsgUtils.ensure_messages(state)
 
     context = {
@@ -81,7 +84,7 @@ async def presenter_node(state: AgentState) -> dict[str, Any]:
     ctx_msg = SystemMessage(content=f"CONTEXT_JSON:\n{json.dumps(context, ensure_ascii=False)}")
 
     final_text = await present_final([ctx_msg, *MsgUtils.only_human_messages(messages)])
-    return {"messages": MsgUtils.append_response(messages, final_text)}
+    return {"messages": MsgUtils.append_response(messages, f"[PRSNT] {final_text}")}
 
 
 # endregion
@@ -107,16 +110,22 @@ async def user_admittance_node(state: AgentState, config: RunnableConfig) -> dic
 
     """
     # Emit step progress to frontend (best-effort; ignore if no callback context, e.g. unit tests invoking the node directly)
+    messages = MsgUtils.ensure_messages(state)
+
     with suppress(RuntimeError):
-        await copilotkit_emit_state(
+        modifiedConfig = copilotkit_customize_config(
             config,
+            emit_messages=False,
+        )
+
+        await copilotkit_emit_state(
+            modifiedConfig,
             {
                 "current_step": "user_admittance_node",
                 "step_message": STEP_MESSAGES["user_admittance_node"],
             },
         )
 
-    messages = MsgUtils.ensure_messages(state)
     res = await watch_dog.run(user_input=messages)
 
     logger.debug(
@@ -189,9 +198,9 @@ def bottom_line_handler_node(state: AgentState) -> dict[str, Any]:
         A state patch with updated `messages` and `bottom_line_feedback`.
 
     """
-    logger.debug("[LG][Bottom Line Handler Node] Bottom line handler node triggered")
+    logger.info("[LG][Bottom Line Handler Node] Bottom line handler node triggered")
 
-    feedback = "当前请求超出系统领域/能力范围, 无法执行。请提供与小分子合成或 DMPK 实验相关的需求。"
+    feedback = "[BTH] 当前请求超出系统领域/能力范围, 无法执行。请提供与小分子合成或 DMPK 实验相关的需求。"
 
     messages = MsgUtils.append_thinking(MsgUtils.ensure_messages(state), f"[bottom_line_handler] rejected\n{feedback}")
     return {"messages": messages, "bottom_line_feedback": feedback}
@@ -400,6 +409,9 @@ def route_next_todo(state: AgentState) -> str:
 
 def tlc_router(state: AgentState) -> dict[str, Any]:
     """Route to the TLC router."""
+
+    logger.info("[LG][TLC Router] TLC router triggered...")
+
     _ = state
     return {}
 

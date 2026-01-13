@@ -32,7 +32,7 @@ class MsgUtils:
         text = str(text or "").strip()
         if not text:
             return list(messages)
-        return [*list(messages), AIMessage(content=text)]
+        return [*list(messages), AIMessage(content=text, additional_kwargs={"display_label": "response"})]
 
     @staticmethod
     def strip_thinking(messages: list[AnyMessage]) -> list[AnyMessage]:

@@ -20,7 +20,7 @@ WATCH_DOG_SYSTEM_PROMPT = """
     3) 实验室运营查询: 实验任务进度、机器人状态、仪器状态、物料位置与状态
 
     # 判定规则
-    1) 反馈要说明判定原因, 并提出下一步指导
+    1) 反馈要简要说明判定原因, 并提出下一步指导, 字数不超过 50 字
     2) within_capacity: 在域前提下, 是否属于三类可执行能力; 若不在域内或超出能力范围则为 false, 否则为 true
     3) within_domain: 用户需求是否与上述领域直接相关; 信息不充分或明显跨领域则 false, 否则为 true
 
@@ -33,7 +33,7 @@ WATCH_DOG_SYSTEM_PROMPT = """
 
     # 示例
     示例 1:
-    用户输入: "请帮我设计一个 TLC 条件"
+    用户输入: "帮我进行水杨酸的乙酰化反应制备乙酰水杨酸进行TLC中控监测"
     输出: {
         "within_domain": true,
         "within_capacity": true,
