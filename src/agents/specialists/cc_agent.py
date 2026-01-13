@@ -286,7 +286,7 @@ class CCAgent:
                 column_volume=15.0,
                 air_purge_time=2.0
             )
-            # TODO: result = get_recommended_params(state.payload)
+            # result = get_recommended_params(state.payload)
             logger.info(f"CC params fetched: {result}")
 
             # 添加系统消息记录
@@ -427,10 +427,14 @@ class CCAgent:
 
 
 if __name__ == "__main__":
-    from pathlib import Path
+    import asyncio
     import uuid
+    from pathlib import Path
+
     from langchain_core.messages import HumanMessage
     from langchain_core.runnables.config import RunnableConfig
+    from langgraph.types import Command
+
     from src.utils.tools import terminal_approval_handler
 
     # Step 1: 创建 agent
@@ -447,48 +451,39 @@ if __name__ == "__main__":
 
     # Step 4: 初始化输入
     text = input("[user]: ").strip() or "帮我做柱层析分离"
-    next_input = CCAgentGraphState(
+    next_input: CCAgentGraphState | Command = CCAgentGraphState(
         messages=[HumanMessage(content=text)],
     )
 
-    # Step 5: 运行循环
-    while True:
-        interrupted = False
-        
-        for event in agent.compiled.stream(next_input, config=config, stream_mode="values"):
-            if "__interrupt__" in event:
-                interrupted = True
-                print("\n" + "=" * 50)
-                print("[INTERRUPT] 等待用户确认...")
-                print("=" * 50)
-                
-                # 显示中断信息（Interrupt 对象用 .value 访问数据）
-                interrupt_data = event["__interrupt__"]
-                if interrupt_data:
-                    for item in interrupt_data:
-                        # item 是 Interrupt 对象，用 .value 获取实际数据
-                        payload = item.value if hasattr(item, 'value') else item
-                        if isinstance(payload, dict):
-                            print(f"Message: {payload.get('message', 'N/A')}")
-                            print(f"Args: {payload.get('args', {})}")
-                        else:
-                            print(f"Payload: {payload}")
-                
-                # 终端交互处理
-                next_input = terminal_approval_handler(event)
-                break
-            
-            # 打印当前状态
-            print("\n" + "-" * 40)
-            if "messages" in event:
-                for msg in event["messages"][-3:]:  # 只显示最后3条消息
-                    print(f"[{type(msg).__name__}]: {getattr(msg, 'content', str(msg))[:200]}")
-            if "payload" in event and event["payload"]:
-                print(f"[Payload]: {event['payload']}")
-            print("-" * 40)
+    async def _run(next_input: CCAgentGraphState | Command) -> None:
+        """异步运行 CC Agent 测试循环"""
+        while True:
+            interrupted = False
 
-        if not interrupted:
-            print("\n" + "=" * 50)
-            print("Graph reached END")
-            print("=" * 50)
-            break
+            async for state in agent.compiled.astream(next_input, config=config, stream_mode="values"):
+                if "__interrupt__" in state:
+                    interrupted = True
+                    print("\n" + "=" * 50)
+                    print("[INTERRUPT] 等待用户确认...")
+                    print("=" * 50)
+
+                    # 终端交互处理（terminal_approval_handler 会显示中断信息）
+                    next_input = terminal_approval_handler(state)
+                    break
+
+                # 打印当前状态
+                print("\n" + "-" * 40)
+                if "messages" in state:
+                    for msg in state["messages"][-3:]:  # 只显示最后3条消息
+                        print(f"[{type(msg).__name__}]: {getattr(msg, 'content', str(msg))[:200]}")
+                if "payload" in state and state["payload"]:
+                    print(f"[Payload]: {state['payload']}")
+                print("-" * 40)
+
+            if not interrupted:
+                print("\n" + "=" * 50)
+                print("Graph reached END")
+                print("=" * 50)
+                break
+
+    asyncio.run(_run(next_input))
