@@ -237,12 +237,12 @@ class CCAgent:
                 except Exception:
                     logger.warning("Failed to parse edited spec from resume.data")
 
-        # 处理用户消息
+        # 处理用户消息（仅在拒绝/继续对话时有效）
         user_text = (resume.comment or "").strip()
         if user_text:
             messages = MsgUtils.append_user_message(messages, user_text)
 
-            # 调用 LLM 处理对话（可选）
+            # 调用 LLM 处理对话
             result = self._agent.invoke({"messages": [*messages]})
             
             # 如果 LLM 返回了更新的 spec，应用它
@@ -251,7 +251,6 @@ class CCAgent:
                 pass
             
             # 将 AI 回复加入消息历史
-            # create_agent 返回 {"messages": [...]} 结构
             if "messages" in result and result["messages"]:
                 last_msg = result["messages"][-1]
                 ai_content = getattr(last_msg, "content", str(last_msg))
@@ -402,21 +401,20 @@ class CCAgent:
                 except Exception:
                     logger.warning("Failed to parse edited params from resume.data")
 
-        # 处理用户消息
+        # 处理用户消息（仅在拒绝/继续对话时有效）
         user_text = (resume.comment or "").strip()
         if user_text:
             messages = MsgUtils.append_user_message(messages, user_text)
 
-            # 调用 LLM 处理对话（可选）
+            # 调用 LLM 处理对话
             result = self._agent.invoke({"messages": [*messages]})
             
-            # 如果 LLM 返回了更新的 spec，应用它
+            # 如果 LLM 返回了更新的 params，应用它
             if hasattr(result, "structured_response"):
                 # TODO：根据你的 LLM 输出结构处理
                 pass
             
             # 将 AI 回复加入消息历史
-            # create_agent 返回 {"messages": [...]} 结构
             if "messages" in result and result["messages"]:
                 last_msg = result["messages"][-1]
                 ai_content = getattr(last_msg, "content", str(last_msg))
