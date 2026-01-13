@@ -55,6 +55,38 @@ def _stub_planner_compiled_no_hitl(*, plan_out: PlannerAgentOutput) -> Any:
     return g.compile()
 
 
+def _stub_planner_compiled_with_hitl(*, plan_out: PlannerAgentOutput) -> Any:
+    """A tiny planner subgraph runnable with 1 interrupt to approve the plan."""
+
+    def _write_plan(state: AgentState) -> dict[str, Any]:
+        plan = plan_out.model_copy(update={"user_approval": False})
+        return {"plan": plan, "plan_cursor": 0, "messages": list(state.messages)}
+
+    def _plan_review(state: AgentState) -> dict[str, Any]:
+        assert state.plan is not None
+        payload = OperationInterruptPayload(
+            message="Please review the plan.",
+            args=state.plan.model_dump(mode="json"),
+        )
+        resume_raw = lg_interrupt(payload.model_dump(mode="json"))
+        resume = coerce_operation_resume(resume_raw)
+        approved = bool(resume.approval)
+        if approved:
+            return {"plan": state.plan.model_copy(update={"user_approval": True})}
+        return {"plan": None, "plan_cursor": 0}
+
+    def _route_review(state: AgentState) -> str:
+        return "approved" if state.plan and state.plan.user_approval else "revise"
+
+    g = StateGraph(AgentState)
+    g.add_node("write_plan", _write_plan)
+    g.add_node("plan_review", _plan_review)
+    g.add_edge(START, "write_plan")
+    g.add_edge("write_plan", "plan_review")
+    g.add_conditional_edges("plan_review", _route_review, {"revise": "write_plan", "approved": END})
+    return g.compile()
+
+
 def _stub_tlc_compiled_no_hitl(*, tlc_spec: TLCAgentOutput) -> Any:
     """A tiny TLC subgraph-as-node runnable that just writes `tlc_spec` (no interrupts)."""
 
@@ -109,10 +141,10 @@ def _build_agent() -> Any:
     return create_talos_agent(checkpointer=MemorySaver())
 
 
-def test_bottom_line_handler_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_bottom_line_handler_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     """Out-of-domain/out-of-capacity should route to BottomLine handler and end."""
 
-    def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
+    async def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
         out = UserAdmittance(
             id="adm_1",
             user_input=user_input,
@@ -122,7 +154,7 @@ def test_bottom_line_handler_flow(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         return _op_response(operation_id="watchdog_test", input_value=user_input, output_value=out)
 
-    def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
+    async def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
         # Parallel start runs intention detection even if admittance rejects; keep this test offline by stubbing it.
         out = IntentionDetectionFin(
             matched_goal_type=GoalTypeEnum.CONSULTING,
@@ -138,16 +170,16 @@ def test_bottom_line_handler_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="what's the weather?")]
     init = AgentState(messages=msgs)
-    result = agent.invoke(init, config={"configurable": {"thread_id": "t-bottom-line"}})
+    result = await agent.ainvoke(init, config={"configurable": {"thread_id": "t-bottom-line"}})
 
     assert result["bottom_line_feedback"] == "当前请求超出系统领域/能力范围, 无法执行。请提供与小分子合成或 DMPK 实验相关的需求。"
     assert len(result["messages"]) >= 2
 
 
-def test_consulting_route(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_consulting_route(monkeypatch: pytest.MonkeyPatch) -> None:
     """Consulting intent should route to consulting handler and end (no planner/executor)."""
 
-    def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
+    async def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
         out = UserAdmittance(
             id="adm_1",
             user_input=user_input,
@@ -157,7 +189,7 @@ def test_consulting_route(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         return _op_response(operation_id="watchdog_test", input_value=user_input, output_value=out)
 
-    def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
+    async def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
         out = IntentionDetectionFin(
             matched_goal_type=GoalTypeEnum.CONSULTING,
             reason="consult",
@@ -172,15 +204,15 @@ def test_consulting_route(monkeypatch: pytest.MonkeyPatch) -> None:
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="帮我推荐一个 TLC 条件")]
     init = AgentState(messages=msgs)
-    result = agent.invoke(init, config={"configurable": {"thread_id": "t-consult"}})
+    result = await agent.ainvoke(init, config={"configurable": {"thread_id": "t-consult"}})
 
     assert result["mode"] == "consulting"
 
 
-def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     """Execution intent + plan should route into executor and run the TLC subgraph."""
 
-    def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
+    async def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
         out = UserAdmittance(
             id="adm_1",
             user_input=user_input,
@@ -190,7 +222,7 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         return _op_response(operation_id="watchdog_test", input_value=user_input, output_value=out)
 
-    def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
+    async def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
         out = IntentionDetectionFin(
             matched_goal_type=GoalTypeEnum.EXECUTION,
             reason="execute",
@@ -236,7 +268,7 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     agent = _build_agent()
     msgs: list[AnyMessage] = [HumanMessage(content="我要做 TLC 点板并生成条件")]
     init = AgentState(messages=msgs)
-    result = agent.invoke(init, config={"configurable": {"thread_id": "t-exec-tlc"}})
+    result = await agent.ainvoke(init, config={"configurable": {"thread_id": "t-exec-tlc"}})
 
     plan: PlannerAgentOutput = result["plan"]
     assert plan.plan_steps[0].status == ExecutionStatusEnum.COMPLETED
@@ -248,10 +280,10 @@ def test_execution_tlc_subgraph_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     assert spec.confirmed is True
 
 
-def test_individual_node_execution_user_admittance(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_individual_node_execution_user_admittance(monkeypatch: pytest.MonkeyPatch) -> None:
     """LangGraph recommended: test nodes via `compiled_graph.nodes[...]` without running the full graph."""
 
-    def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
+    async def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
         out = UserAdmittance(
             id="adm_1",
             user_input=user_input,
@@ -265,12 +297,12 @@ def test_individual_node_execution_user_admittance(monkeypatch: pytest.MonkeyPat
     agent = _build_agent()
 
     msgs: list[AnyMessage] = [HumanMessage(content="帮我做个 TLC 点板分析")]
-    updates = agent.nodes["user_admittance"].invoke({"messages": msgs, "user_input": msgs})
+    updates = await agent.nodes["user_admittance"].ainvoke({"messages": msgs, "user_input": msgs})
 
     assert updates["admittance_state"].value == "yes"
 
 
-def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     LangGraph recommended: test streaming + HITL by catching `__interrupt__` and resuming with Command(resume=...).
 
@@ -279,7 +311,7 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
     2) TLC spec confirmation (TLC subgraph)
     """
 
-    def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
+    async def _watchdog_run(*, user_input: list[Any]) -> OperationResponse[list[Any], UserAdmittance]:
         out = UserAdmittance(
             id="adm_1",
             user_input=user_input,
@@ -289,7 +321,7 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
         )
         return _op_response(operation_id="watchdog_test", input_value=user_input, output_value=out)
 
-    def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
+    async def _intention_run(*, user_input: list[Any]) -> OperationResponse[list[Any], IntentionDetectionFin]:
         out = IntentionDetectionFin(
             matched_goal_type=GoalTypeEnum.EXECUTION,
             reason="execute",
@@ -300,7 +332,17 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(node_mapper.watch_dog, "run", _watchdog_run)
     monkeypatch.setattr(node_mapper.intention_detect_agent, "run", _intention_run)
-    monkeypatch.setattr(node_mapper.planner_agent, "_plan", _stub_planner_plan)
+    step = PlanStep(
+        id="s1",
+        title="TLC step",
+        executor=ExecutorKey.TLC_AGENT,
+        args={},
+        status=ExecutionStatusEnum.NOT_STARTED,
+        output=None,
+    )
+    plan_out = PlannerAgentOutput(plan_steps=[step], plan_hash="hash_test", user_approval=False)
+    stub_planner = type("StubPlanner", (), {"compiled": _stub_planner_compiled_with_hitl(plan_out=plan_out)})()
+    monkeypatch.setattr(node_mapper.planner_agent, "compiled", stub_planner.compiled)
     tlc_spec = TLCAgentOutput(
         compounds=[Compound(compound_name="Aspirin", smiles=None)],
         exp_params=[
@@ -330,7 +372,7 @@ def test_streaming_hitl_resume_two_interrupts(monkeypatch: pytest.MonkeyPatch) -
 
     while True:
         resumed = False
-        for state in agent.stream(next_input, config=config, stream_mode="values"):
+        async for state in agent.astream(next_input, config=config, stream_mode="values"):
             assert isinstance(state, dict)
             last_state = state
 

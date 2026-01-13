@@ -58,7 +58,10 @@ def terminal_approval_handler(state: dict[str, Any]) -> Command:
     itp: Interrupt = state["__interrupt__"][0]
 
     interrupt_payload = OperationInterruptPayload.model_validate(itp.value)
-    user_inp = input(f"\nDo you approve? (y/n): {interrupt_payload.message} \n")
+
+    print(f"[HITL] {interrupt_payload.message}\n {interrupt_payload.args}")
+
+    user_inp = input("\nDo you approve? (y/n): ")
 
     approval = user_inp.strip().lower() in {"y", "yes", "approve", "approved"}
     comment = input("Optional comment (enter to skip): ").strip()

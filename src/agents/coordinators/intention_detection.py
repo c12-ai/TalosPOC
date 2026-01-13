@@ -22,7 +22,7 @@ class IntentionDetectionAgent:
 
         logger.info("IntentionDetectionAgent initialized with model={}", self.intention_detection_agent)
 
-    def run(self, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], IntentionDetectionFin]:
+    async def run(self, user_input: list[AnyMessage]) -> OperationResponse[list[AnyMessage], IntentionDetectionFin]:
         """
         Detect user intention from input messages.
 
@@ -35,12 +35,12 @@ class IntentionDetectionAgent:
         """
         start_time = datetime.now()
 
-        logger.info("IntentionDetectionAgent.run triggered with {} messages", len(user_input))
+        logger.info("[Agent][IntentionDetectionAgent] IntentionDetectionAgent.run triggered with {} messages", len(user_input))
 
         # Step 1. AI determine the intention of which goal
-        ai_output = None
         try:
-            ai_output = self.intention_detection_agent.invoke(input={"messages": user_input})["structured_response"]  # type: ignore
+            resp = await self.intention_detection_agent.ainvoke(input={"messages": user_input})  # type: ignore
+            ai_output = resp["structured_response"]  # type: ignore
 
             if not isinstance(ai_output, IDAIDetermine):
                 raise TypeError(
@@ -48,7 +48,7 @@ class IntentionDetectionAgent:
                 )
         except StructuredOutputValidationError as se:
             # TODO: Add Structured Output Validation Error Handling
-            logger.error(f"IntentionDetectionAgent error={se}")
+            logger.error(f"[Agent][IntentionDetectionAgent] IntentionDetectionAgent error={se}")
             raise
 
         # Step 2. Construct the intention detection fin output
@@ -61,7 +61,7 @@ class IntentionDetectionAgent:
 
         end_time = datetime.now()
 
-        logger.info(f"IntentionDetectionAgent output={output}")
+        logger.info(f"[Agent][IntentionDetectionAgent] IntentionDetectionAgent output={output}")
 
         return OperationResponse[list[AnyMessage], IntentionDetectionFin](
             operation_id="intention_detection_001",
@@ -73,7 +73,9 @@ class IntentionDetectionAgent:
 
 
 if __name__ == "__main__":
+    import asyncio
+
     from langchain_core.messages import HumanMessage
 
     agent = IntentionDetectionAgent()
-    agent.run(user_input=[HumanMessage(content="帮我做个 TLC 点板分析")])
+    asyncio.run(agent.run(user_input=[HumanMessage(content="帮我做个 TLC 点板分析")]))

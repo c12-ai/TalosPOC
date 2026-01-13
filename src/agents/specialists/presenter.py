@@ -19,7 +19,7 @@ ReviewKind = Literal["plan_review", "tlc_confirm"]
 
 
 FINAL_SYSTEM_PROMPT = """
-你是 Talos (实验室智能助手) 的 Presenter总结最近一步的操作，并简短的描述给用户50字以内的答复。
+你是 Talos (实验室智能助手) 的 Presenter, 总结最近一步的操作, 并简短的描述给用户50字以内的答复。
 
 要求:
 - 你只输出给用户看的最终答复, 不要输出内部日志、工具调用细节、调试信息。
@@ -40,19 +40,19 @@ REVIEW_SYSTEM_PROMPT = """
 """.strip()
 
 
-def _invoke(messages: list[AnyMessage], *, system_prompt: str) -> str:
-    resp = PLANNER_MODEL.invoke([SystemMessage(content=system_prompt), *messages])
+async def _ainvoke(messages: list[AnyMessage], *, system_prompt: str) -> str:
+    resp = await PLANNER_MODEL.ainvoke([SystemMessage(content=system_prompt), *messages])
     content = getattr(resp, "content", "")
     return str(content or "").strip()
 
 
-def present_final(messages: list[AnyMessage]) -> str:
+async def present_final(messages: list[AnyMessage]) -> str:
     """Generate the final user-visible answer from messages."""
-    return _invoke(messages, system_prompt=FINAL_SYSTEM_PROMPT) or "已完成。"
+    return await _ainvoke(messages, system_prompt=FINAL_SYSTEM_PROMPT) or "已完成。"
 
 
-def present_review(messages: list[AnyMessage], *, kind: ReviewKind, args: dict[str, Any]) -> str:
+async def present_review(messages: list[AnyMessage], *, kind: ReviewKind, args: dict[str, Any]) -> str:
     """Generate the user-visible review prompt shown before interrupt."""
     review_json = json.dumps({"kind": kind, "args": args}, ensure_ascii=False)
     review_msg = SystemMessage(content=f"REVIEW_JSON:\n{review_json}")
-    return _invoke([review_msg, *messages], system_prompt=REVIEW_SYSTEM_PROMPT) or "请确认是否继续。"
+    return await _ainvoke([review_msg, *messages], system_prompt=REVIEW_SYSTEM_PROMPT) or "请确认是否继续。"
