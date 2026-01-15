@@ -185,18 +185,6 @@ class REAgent:
         messages = state.messages
 
         try:
-            # result = CCRecommendParams(
-            #     silica_amount=10.5,
-            #     column_size="12g",
-            #     flow_rate=30.0,
-            #     solvent_system="PE/EA",
-            #     start_solvent_ratio="30:1",
-            #     end_solvent_ratio="5:1",
-            #     estimated_time=45.0,
-            #     complex_tlc=False,
-            #     column_volume=15.0,
-            #     air_purge_time=2.0
-            # )
             result = get_recommended_params(state.re.payload)
             logger.info(f"RE params fetched: {result}")
 
