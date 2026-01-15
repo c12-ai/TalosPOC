@@ -23,6 +23,8 @@ class ExecutionStatusEnum(str, Enum):
 
 class ExecutorKey(StrEnum):
     TLC_AGENT = "tlc_agent"
+    CC_AGENT = "cc_agent"
+    RE_AGENT = "re_agent"
     # COLUMN_AGENT = "column.recommend"
     # ROBOT_TLC = "robot.tlc_spot"
     # PROPERTY_LOOKUP = "property.lookup"
@@ -33,4 +35,18 @@ class TLCPhase(str, Enum):
     AWAITING_INFO = "awaiting_info"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
     CONFIRMED = "confirmed"
+    DONE = "done"
+
+class CCPhase(str, Enum):
+    COLLECTING = "collecting"
+    EQUIPMENT_VALIDATED = "equipment_validated"
+    SPEC_CONFIRMED = "spec_confirmed"
+    PARAMS_CONFIRMED = "params_confirmed"
+    DONE = "done"
+
+class REPhase(str, Enum):
+    COLLECTING = "collecting"
+    EQUIPMENT_VALIDATED = "equipment_validated"
+    SPEC_CONFIRMED = "spec_confirmed"
+    PARAMS_CONFIRMED = "params_confirmed"
     DONE = "done"

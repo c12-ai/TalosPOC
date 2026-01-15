@@ -18,10 +18,14 @@ from src.agents.coordinators.intention_detection import IntentionDetectionAgent
 from src.agents.coordinators.planner import PlannerAgent
 from src.agents.specialists.presenter import present_final
 from src.agents.specialists.tlc_agent import TLCAgent
+from src.agents.specialists.cc_agent import CCAgent
+from src.agents.specialists.re_agent import REAgent
 from src.models.core import AgentState
-from src.models.enums import AdmittanceState, ExecutionStatusEnum, ExecutorKey, TLCPhase
+from src.models.enums import AdmittanceState, ExecutionStatusEnum, ExecutorKey, TLCPhase, CCPhase, REPhase
 from src.models.planner import PlannerAgentOutput, PlanStep
 from src.models.tlc import TLCExecutionState
+from src.models.cc import CCExecutionState
+from src.models.re import REExecutionState
 from src.utils.logging_config import logger
 from src.utils.messages import MsgUtils
 
@@ -32,11 +36,17 @@ STEP_MESSAGES = {
     "stage_dispatcher": "Determining the best workflow for your request...",
     "prepare_tlc_step_node": "Preparing TLC step for execution...",
     "finalize_tlc_step_node": "Finalizing TLC step results...",
+    "prepare_cc_step_node": "Preparing CC step for execution...",
+    "finalize_cc_step_node": "Finalizing CC step results...",
+    "prepare_re_step_node": "Preparing RE step for execution...",
+    "finalize_re_step_node": "Finalizing RE step results...",
 }
 
 watch_dog = WatchDogAgent()
 intention_detect_agent = IntentionDetectionAgent()
 tlc_agent = TLCAgent()
+cc_agent = CCAgent()
+re_agent = REAgent()
 planner_agent = PlannerAgent()
 
 
@@ -79,6 +89,8 @@ async def presenter_node(state: AgentState) -> dict[str, Any]:
         "plan": state.plan.model_dump(mode="json") if state.plan else None,
         "plan_cursor": int(state.plan_cursor),
         "tlc": state.tlc.model_dump(mode="json"),
+        "cc": state.cc.model_dump(mode="json"),
+        "re": state.re.model_dump(mode="json"),
     }
 
     ctx_msg = SystemMessage(content=f"CONTEXT_JSON:\n{json.dumps(context, ensure_ascii=False)}")
@@ -397,6 +409,10 @@ def route_next_todo(state: AgentState) -> str:
 
     if step.executor == ExecutorKey.TLC_AGENT:
         return "tlc_router"
+    if step.executor == ExecutorKey.CC_AGENT:
+        return "cc_router"
+    if step.executor == ExecutorKey.RE_AGENT:
+        return "re_router"
 
     return "done"
 
@@ -498,6 +514,161 @@ async def finalize_tlc_step_node(state: AgentState, config: RunnableConfig) -> d
         "plan_cursor": cursor + 1,
         "current_step": None,
         "step_message": None,
+    }
+
+
+# endregion
+
+
+# region <CC>
+
+
+def cc_router(state: AgentState) -> dict[str, Any]:
+    """Route to the CC router."""
+    return {}
+
+
+def route_cc_next_todo(state: AgentState) -> str:
+    """Route to the CC next todo."""
+
+    if state.cc.phase == CCPhase.COLLECTING:
+        return "prepare_cc_step"
+    
+    if state.cc.phase == CCPhase.PARAMS_CONFIRMED:
+        return "finalize_cc_step"
+
+    return "done"
+
+async def prepare_cc_step_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    """Update state value and validate device status."""
+    # Emit step progress to frontend (best-effort; ignore if no callback context)
+    with suppress(RuntimeError):
+        await copilotkit_emit_state(
+            config,
+            {
+                "current_step": "prepare_cc_step_node",
+                "step_message": STEP_MESSAGES["prepare_cc_step_node"],
+            },
+        )
+    messages = MsgUtils.append_thinking(MsgUtils.ensure_messages(state), "[prepare_cc_step] Device status validated")
+    return {
+        "cc": CCExecutionState(phase=CCPhase.EQUIPMENT_VALIDATED),
+        "messages": messages,
+    }
+
+def finalize_cc_step_node(state: AgentState) -> dict[str, Any]:
+    """
+    Finalize the current CC plan step after the CC subgraph completes.
+
+    This node expects `state.cc.payload` to have been produced/confirmed by the CC subgraph. It writes the confirmed payload into the current
+    `PlanStep.output`, marks the step `COMPLETED`, and advances `plan_cursor`. It also sets `cc_phase=DONE` so upstream nodes can treat the CC
+    execution as finished for this step.
+
+    Args:
+        state: Current workflow state.
+
+    Returns:
+        A state patch with updated `plan`, `cc.finalized=True`, and `plan_cursor` advanced by 1.
+
+    Raises:
+        ValueError: If `state.cc.payload` is missing after the CC subgraph completes.
+
+    """
+    cursor, step = _get_current_step(state)
+    approved_params = state.cc.payload
+    if approved_params is None:
+        raise ValueError("Missing 'cc.payload' after executing CC subgraph")
+
+    step.output = {
+        "agent": "cc_agent_subgraph",
+        "executor": str(step.executor),
+        "args": step.args,
+        "params": approved_params.model_dump(mode="json"),
+    }
+    step.status = ExecutionStatusEnum.COMPLETED
+
+    logger.info("Finalized CC step cursor={} id={} executor={}", cursor, step.id, step.executor)
+    return {
+        "plan": state.plan,
+        "cc": state.cc.model_copy(update={"phase": CCPhase.DONE}),
+        "plan_cursor": cursor + 1,
+    }
+
+
+# endregion
+
+
+# region <RE>
+
+
+def re_router(state: AgentState) -> dict[str, Any]:
+    """Route to the RE router."""
+    return {}
+
+def route_re_next_todo(state: AgentState) -> str:
+    """Route to the RE next todo."""
+
+    if state.re.phase == REPhase.COLLECTING:
+        return "prepare_re_step"
+    
+    if state.re.phase == REPhase.PARAMS_CONFIRMED:
+        return "finalize_re_step"
+
+    return "done"
+
+async def prepare_re_step_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    """Update state value and validate device status."""
+    # Emit step progress to frontend (best-effort; ignore if no callback context)
+    with suppress(RuntimeError):
+        await copilotkit_emit_state(
+            config,
+            {
+                "current_step": "prepare_re_step_node",
+                "step_message": STEP_MESSAGES["prepare_re_step_node"],
+            },
+        )
+    messages = MsgUtils.append_thinking(MsgUtils.ensure_messages(state), "[prepare_re_step] Device status validated")
+    return {
+        "re": REExecutionState(phase=REPhase.EQUIPMENT_VALIDATED),
+        "messages": messages,
+    }
+
+def finalize_re_step_node(state: AgentState) -> dict[str, Any]:
+    """
+    Finalize the current RE plan step after the RE subgraph completes.
+
+    This node expects `state.re.payload` to have been produced/confirmed by the RE subgraph. It writes the confirmed payload into the current
+    `PlanStep.output`, marks the step `COMPLETED`, and advances `plan_cursor`. It also sets `re_phase=DONE` so upstream nodes can treat the RE
+    execution as finished for this step.
+
+    Args:
+        state: Current workflow state.
+
+    Returns:
+        A state patch with updated `plan`, `re.finalized=True`, and `plan_cursor` advanced by 1.
+
+    Raises:
+        ValueError: If `state.re.payload` is missing after the RE subgraph completes.
+
+    """
+    cursor, step = _get_current_step(state)
+    approved_params = state.re.payload
+    if approved_params is None:
+        raise ValueError("Missing 're.payload' after executing RE subgraph")
+
+    step.output = {
+        "agent": "re_agent_subgraph",
+        "executor": str(step.executor),
+        "args": step.args,
+        "params": approved_params.model_dump(mode="json"),
+    }
+    step.status = ExecutionStatusEnum.COMPLETED
+
+    logger.info("Finalized RE step cursor={} id={} executor={}", cursor, step.id, step.executor)
+    return {
+        "plan": state.plan,
+        "re": state.re.model_copy(update={"phase": REPhase.DONE}),
+        "plan_cursor": cursor + 1,
     }
 
 
